@@ -172,17 +172,6 @@ console.log(`
 
 // ── Node.js version check ──────────────────────────────────
 const nodeMajor = parseInt(process.versions.node.split(".")[0], 10);
-if (nodeMajor >= 24) {
-  console.warn(`\x1b[33m  ⚠  Warning: You are running Node.js ${process.versions.node}.
-     OmniRoute uses better-sqlite3, a native addon that does not yet
-     have compatible prebuilt binaries for Node.js 24+.
-     You may experience errors like "is not a valid Win32 application"
-     or "NODE_MODULE_VERSION mismatch".
-
-     Recommended: use Node.js 22 LTS (or 20 LTS).
-     Workaround:  npm rebuild better-sqlite3\x1b[0m
-`);
-}
 
 // ── Resolve server entry ───────────────────────────────────
 const serverJs = join(APP_DIR, "server.js");
@@ -206,7 +195,23 @@ const sqliteBinary = join(
   "Release",
   "better_sqlite3.node"
 );
-if (existsSync(sqliteBinary) && !isNativeBinaryCompatible(sqliteBinary)) {
+const sqliteBinaryCompatibility = existsSync(sqliteBinary)
+  ? isNativeBinaryCompatible(sqliteBinary)
+  : null;
+
+if (nodeMajor >= 24 && sqliteBinaryCompatibility !== true) {
+  console.warn(`\x1b[33m  ⚠  Warning: You are running Node.js ${process.versions.node}.
+     OmniRoute uses better-sqlite3, a native addon, and the bundled binary
+     for this install has not been verified as compatible with your runtime.
+     You may experience errors like "is not a valid Win32 application"
+     or "NODE_MODULE_VERSION mismatch".
+
+     Recommended: use Node.js 22 LTS (or 20 LTS).
+     Workaround:  npm rebuild better-sqlite3\x1b[0m
+`);
+}
+
+if (sqliteBinaryCompatibility === false) {
   console.error(
     "\x1b[31m✖ better-sqlite3 native module is incompatible with this platform.\x1b[0m"
   );

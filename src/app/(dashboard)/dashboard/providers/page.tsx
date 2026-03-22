@@ -301,6 +301,74 @@ export default function ProvidersPage() {
         </div>
       </div>
 
+      {/* API Key Compatible Providers — dynamic (OpenAI/Anthropic compatible) */}
+      <div className="flex flex-col gap-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <h2 className="text-xl font-semibold flex items-center gap-2 flex-1 min-w-0">
+            {t("compatibleProviders")}{" "}
+            <span className="size-2.5 rounded-full bg-orange-500" title={t("compatibleLabel")} />
+          </h2>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => setShowAddAnthropicCompatibleModal(true)}
+              className="flex items-center gap-1.5 rounded-lg border border-border bg-bg-subtle px-3 py-1.5 text-xs font-medium text-text-muted transition-colors hover:border-primary/40 hover:text-text-primary"
+            >
+              <span className="material-symbols-outlined text-[14px]">add</span>
+              {t("addAnthropicCompatible")}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowAddCompatibleModal(true)}
+              className="flex items-center gap-1.5 rounded-lg border border-border bg-bg-subtle px-3 py-1.5 text-xs font-medium text-text-muted transition-colors hover:border-primary/40 hover:text-text-primary"
+            >
+              <span className="material-symbols-outlined text-[14px]">add</span>
+              {t("addOpenAICompatible")}
+            </button>
+            {(compatibleProviders.length > 0 || anthropicCompatibleProviders.length > 0) && (
+              <button
+                type="button"
+                onClick={() => handleBatchTest("compatible")}
+                disabled={!!testingMode}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+                  testingMode === "compatible"
+                    ? "bg-primary/20 border-primary/40 text-primary animate-pulse"
+                    : "bg-bg-subtle border-border text-text-muted hover:text-text-primary hover:border-primary/40"
+                }`}
+                title={t("testAllCompatible")}
+              >
+                <span className="material-symbols-outlined text-[14px]">
+                  {testingMode === "compatible" ? "sync" : "play_arrow"}
+                </span>
+                {testingMode === "compatible" ? t("testing") : t("testAll")}
+              </button>
+            )}
+          </div>
+        </div>
+        {compatibleProviders.length === 0 && anthropicCompatibleProviders.length === 0 ? (
+          <div className="text-center py-8 border border-dashed border-border rounded-xl">
+            <span className="material-symbols-outlined text-[32px] text-text-muted mb-2">
+              extension
+            </span>
+            <p className="text-text-muted text-sm">{t("noCompatibleYet")}</p>
+            <p className="text-text-muted text-xs mt-1">{t("compatibleHint")}</p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+            {[...compatibleProviders, ...anthropicCompatibleProviders].map((info) => (
+              <ApiKeyProviderCard
+                key={info.id}
+                providerId={info.id}
+                provider={info}
+                stats={getProviderStats(info.id, "apikey")}
+                authType="compatible"
+                onToggle={(active) => handleToggleProvider(info.id, "apikey", active)}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
       {/* Free Providers */}
       <div className="flex flex-col gap-4">
         <div className="flex flex-wrap items-center gap-2">
@@ -375,69 +443,6 @@ export default function ProvidersPage() {
             />
           ))}
         </div>
-      </div>
-
-      {/* API Key Compatible Providers — dynamic (OpenAI/Anthropic compatible) */}
-      <div className="flex flex-col gap-4">
-        <div className="flex flex-wrap items-center gap-2">
-          <h2 className="text-xl font-semibold flex items-center gap-2 flex-1 min-w-0">
-            {t("compatibleProviders")}{" "}
-            <span className="size-2.5 rounded-full bg-orange-500" title={t("compatibleLabel")} />
-          </h2>
-          <div className="flex flex-wrap gap-2">
-            {(compatibleProviders.length > 0 || anthropicCompatibleProviders.length > 0) && (
-              <button
-                onClick={() => handleBatchTest("compatible")}
-                disabled={!!testingMode}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
-                  testingMode === "compatible"
-                    ? "bg-primary/20 border-primary/40 text-primary animate-pulse"
-                    : "bg-bg-subtle border-border text-text-muted hover:text-text-primary hover:border-primary/40"
-                }`}
-                title={t("testAllCompatible")}
-              >
-                <span className="material-symbols-outlined text-[14px]">
-                  {testingMode === "compatible" ? "sync" : "play_arrow"}
-                </span>
-                {testingMode === "compatible" ? t("testing") : t("testAll")}
-              </button>
-            )}
-            <Button size="sm" icon="add" onClick={() => setShowAddAnthropicCompatibleModal(true)}>
-              {t("addAnthropicCompatible")}
-            </Button>
-            <Button
-              size="sm"
-              variant="secondary"
-              icon="add"
-              onClick={() => setShowAddCompatibleModal(true)}
-              className="!bg-white !text-black hover:!bg-gray-100"
-            >
-              {t("addOpenAICompatible")}
-            </Button>
-          </div>
-        </div>
-        {compatibleProviders.length === 0 && anthropicCompatibleProviders.length === 0 ? (
-          <div className="text-center py-8 border border-dashed border-border rounded-xl">
-            <span className="material-symbols-outlined text-[32px] text-text-muted mb-2">
-              extension
-            </span>
-            <p className="text-text-muted text-sm">{t("noCompatibleYet")}</p>
-            <p className="text-text-muted text-xs mt-1">{t("compatibleHint")}</p>
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-            {[...compatibleProviders, ...anthropicCompatibleProviders].map((info) => (
-              <ApiKeyProviderCard
-                key={info.id}
-                providerId={info.id}
-                provider={info}
-                stats={getProviderStats(info.id, "apikey")}
-                authType="compatible"
-                onToggle={(active) => handleToggleProvider(info.id, "apikey", active)}
-              />
-            ))}
-          </div>
-        )}
       </div>
       <AddOpenAICompatibleModal
         isOpen={showAddCompatibleModal}

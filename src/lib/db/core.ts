@@ -401,8 +401,9 @@ export function getDbInstance(): SqliteDatabase {
   // Detect and handle old schema format — preserve data when possible (#146)
   // Uses a single probe connection that becomes the real connection when possible.
   if (fs.existsSync(sqliteFile)) {
+    let probe: SqliteDatabase | null = null;
     try {
-      const probe = new Database(sqliteFile, { readonly: true });
+      probe = new Database(sqliteFile, { readonly: true });
       const hasOldSchema = probe
         .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_migrations'")
         .get();
@@ -418,6 +419,7 @@ export function getDbInstance(): SqliteDatabase {
           // Table might not exist at all — truly incompatible
         }
         probe.close();
+        probe = null;
 
         if (hasData) {
           console.log(
@@ -449,15 +451,25 @@ export function getDbInstance(): SqliteDatabase {
         }
       } else {
         probe.close();
+        probe = null;
       }
     } catch (e: unknown) {
-      const message = e instanceof Error ? e.message : String(e);
-      console.warn("[DB] Could not probe existing DB, will create fresh:", message);
       try {
-        fs.unlinkSync(sqliteFile);
+        probe?.close();
       } catch {
-        /* ok */
+        /* best effort */
       }
+
+      const message = e instanceof Error ? e.message : String(e);
+      console.error("[DB] Could not probe existing DB; refusing to replace it automatically:", {
+        sqliteFile,
+        message,
+      });
+      throw new Error(
+        `Existing database at '${sqliteFile}' could not be inspected. ` +
+          `OmniRoute preserved the file and aborted startup to avoid data loss. ` +
+          `Inspect or restore the database before retrying. Original error: ${message}`
+      );
     }
   }
 

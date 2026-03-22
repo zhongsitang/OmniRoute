@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { jwtVerify, SignJWT } from "jose";
 import { generateRequestId } from "./shared/utils/requestId";
-import { getSettings } from "./lib/localDb";
 import { isPublicRoute, verifyAuth, isAuthRequired } from "./shared/utils/apiAuth";
 import { checkBodySize, getBodySizeLimit } from "./shared/middleware/bodySizeGuard";
 import { isDraining } from "./lib/gracefulShutdown";
@@ -72,6 +71,21 @@ export async function proxy(request) {
       return response;
     }
 
+    let authRequired = true;
+    try {
+      // Keep dashboard and management API auth behavior aligned.
+      // If there is no usable password configured, users must still be able to
+      // reach the UI to finish onboarding or set a new password.
+      authRequired = await isAuthRequired();
+    } catch (err) {
+      // FASE-01: Log auth/settings fetch errors instead of silencing them
+      console.error("[Middleware] settings_error: Auth requirement check failed:", err.message, {
+        path: pathname,
+        requestId,
+      });
+      // On error, require login
+    }
+
     const token = request.cookies.get("auth_token")?.value;
 
     if (token) {
@@ -114,35 +128,31 @@ export async function proxy(request) {
 
         return response;
       } catch (err) {
+        if (!authRequired) {
+          // Stale auth cookies should not trap users in a redirect loop when
+          // the instance currently has no usable password configured.
+          response.cookies.delete("auth_token");
+          console.warn("[Middleware] Ignoring stale auth cookie because login is not required", {
+            path: pathname,
+            requestId,
+          });
+          return response;
+        }
+
         // FASE-01: Log auth errors instead of silently redirecting
         console.error("[Middleware] auth_error: JWT verification failed:", err.message, {
           path: pathname,
           tokenPresent: true,
           requestId,
         });
-        return NextResponse.redirect(new URL("/login", request.url));
+        const redirectResponse = NextResponse.redirect(new URL("/login", request.url));
+        redirectResponse.cookies.delete("auth_token");
+        return redirectResponse;
       }
     }
 
-    try {
-      // Direct import — no HTTP self-fetch overhead
-      const settings = await getSettings();
-      // Skip auth if login is not required
-      if (settings.requireLogin === false) {
-        return response;
-      }
-      // Skip auth ONLY for fresh installs (before onboarding) where no password exists yet.
-      // Once setupComplete is true, always require auth — prevents bypass if password row is lost (#151)
-      if (!settings.setupComplete && !settings.password && !process.env.INITIAL_PASSWORD) {
-        return response;
-      }
-    } catch (err) {
-      // FASE-01: Log settings fetch errors instead of silencing them
-      console.error("[Middleware] settings_error: Settings read failed:", err.message, {
-        path: pathname,
-        requestId,
-      });
-      // On error, require login
+    if (!authRequired) {
+      return response;
     }
     return NextResponse.redirect(new URL("/login", request.url));
   }

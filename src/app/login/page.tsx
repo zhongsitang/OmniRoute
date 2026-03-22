@@ -53,8 +53,11 @@ export default function LoginPage() {
 
   const handleLogin = async (e) => {
     e.preventDefault();
+    if (loading) return;
+
     setLoading(true);
     setError("");
+    let loginSucceeded = false;
 
     try {
       const res = await fetch("/api/auth/login", {
@@ -64,8 +67,11 @@ export default function LoginPage() {
       });
 
       if (res.ok) {
+        // Keep the form locked until navigation completes so repeated clicks
+        // during a slow first dashboard render cannot submit the login twice.
+        loginSucceeded = true;
         sessionStorage.setItem("omniroute_login_time", String(Date.now()));
-        router.push("/dashboard");
+        router.replace("/dashboard");
         router.refresh();
       } else {
         const data = await res.json();
@@ -74,7 +80,9 @@ export default function LoginPage() {
     } catch (err) {
       setError(t("errorOccurredRetry"));
     } finally {
-      setLoading(false);
+      if (!loginSucceeded) {
+        setLoading(false);
+      }
     }
   };
 

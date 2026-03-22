@@ -8,7 +8,13 @@ import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Card, CardSkeleton, Button, Modal } from "@/shared/components";
-import { AI_PROVIDERS, FREE_PROVIDERS, OAUTH_PROVIDERS } from "@/shared/constants/providers";
+import {
+  AI_PROVIDERS,
+  FREE_PROVIDERS,
+  OAUTH_PROVIDERS,
+  isAnthropicCompatibleProvider,
+  isOpenAICompatibleProvider,
+} from "@/shared/constants/providers";
 import { useNotificationStore } from "@/store/notificationStore";
 import { copyToClipboard } from "@/shared/utils/clipboard";
 
@@ -16,7 +22,10 @@ export default function HomePageClient({ machineId }) {
   const t = useTranslations("home");
   const tc = useTranslations("common");
   const ts = useTranslations("sidebar");
+  const tp = useTranslations("providers");
   const [providerConnections, setProviderConnections] = useState([]);
+  const [providerNodes, setProviderNodes] = useState([]);
+  const [customModelsByProvider, setCustomModelsByProvider] = useState({});
   const [models, setModels] = useState([]);
   const [loading, setLoading] = useState(true);
   const [baseUrl, setBaseUrl] = useState("/v1");
@@ -31,18 +40,28 @@ export default function HomePageClient({ machineId }) {
 
   const fetchData = useCallback(async () => {
     try {
-      const [provRes, modelsRes, metricsRes] = await Promise.all([
+      const [provRes, nodesRes, modelsRes, customModelsRes, metricsRes] = await Promise.all([
         fetch("/api/providers"),
+        fetch("/api/provider-nodes"),
         fetch("/api/models"),
+        fetch("/api/provider-models"),
         fetch("/api/provider-metrics"),
       ]);
       if (provRes.ok) {
         const provData = await provRes.json();
         setProviderConnections(provData.connections || []);
       }
+      if (nodesRes.ok) {
+        const nodesData = await nodesRes.json();
+        setProviderNodes(nodesData.nodes || []);
+      }
       if (modelsRes.ok) {
         const modelsData = await modelsRes.json();
         setModels(modelsData.models || []);
+      }
+      if (customModelsRes.ok) {
+        const customModelsData = await customModelsRes.json();
+        setCustomModelsByProvider(customModelsData.models || {});
       }
       if (metricsRes.ok) {
         const metricsData = await metricsRes.json();
@@ -59,9 +78,60 @@ export default function HomePageClient({ machineId }) {
     fetchData();
   }, [fetchData]);
 
-  const providerStats = useMemo(() => {
-    return Object.entries(AI_PROVIDERS).map(([providerId, providerInfo]) => {
-      const connections = providerConnections.filter((conn) => conn.provider === providerId);
+  const allModels = useMemo(() => {
+    const providerDisplayAliasById = new Map(
+      providerNodes
+        .filter((node) => typeof node?.id === "string" && node.id)
+        .map((node) => [node.id, node.prefix || node.id])
+    );
+
+    const customModels = Object.entries(customModelsByProvider).flatMap(([providerId, entries]) => {
+      if (!Array.isArray(entries)) return [];
+
+      const providerDisplayAlias =
+        providerDisplayAliasById.get(providerId) ||
+        providerConnections.find((conn) => conn.provider === providerId)?.providerSpecificData
+          ?.prefix ||
+        providerId;
+
+      return entries
+        .map((entry) => {
+          const modelId =
+            typeof entry?.id === "string" && entry.id.trim().length > 0
+              ? entry.id
+              : typeof entry?.name === "string" && entry.name.trim().length > 0
+                ? entry.name
+                : null;
+
+          if (!modelId) return null;
+
+          return {
+            provider: providerId,
+            model: modelId,
+            fullModel: `${providerDisplayAlias}/${modelId}`,
+            alias: modelId,
+            name: entry?.name || modelId,
+            source: entry?.source || "custom",
+          };
+        })
+        .filter(Boolean);
+    });
+
+    const seenModels = new Set();
+
+    return [...models, ...customModels].filter((model) => {
+      const modelKey =
+        model?.fullModel ||
+        (model?.provider && model?.model ? `${model.provider}/${model.model}` : null);
+
+      if (!modelKey || seenModels.has(modelKey)) return false;
+      seenModels.add(modelKey);
+      return true;
+    });
+  }, [customModelsByProvider, models, providerConnections, providerNodes]);
+
+  const { allProviderStats, visibleProviderStats } = useMemo(() => {
+    const countConnections = (connections) => {
       const connected = connections.filter(
         (conn) =>
           conn.isActive !== false &&
@@ -77,8 +147,16 @@ export default function HomePageClient({ machineId }) {
             conn.testStatus === "unavailable")
       ).length;
 
+      return { connected, errors };
+    };
+
+    const countModels = (providerKeys) =>
+      allModels.filter((model) => providerKeys.has(model.provider)).length;
+
+    const builtInStats = Object.entries(AI_PROVIDERS).map(([providerId, providerInfo]) => {
+      const connections = providerConnections.filter((conn) => conn.provider === providerId);
+      const { connected, errors } = countConnections(connections);
       const providerKeys = new Set([providerId, providerInfo.alias].filter(Boolean));
-      const providerModels = models.filter((m) => providerKeys.has(m.provider));
 
       // Determine auth type
       const authType = FREE_PROVIDERS[providerId]
@@ -93,11 +171,58 @@ export default function HomePageClient({ machineId }) {
         total: connections.length,
         connected,
         errors,
-        modelCount: providerModels.length,
+        modelCount: countModels(providerKeys),
         authType,
       };
     });
-  }, [providerConnections, models]);
+
+    const providerNodeMap = new Map(providerNodes.map((node) => [node.id, node]));
+    const compatibleProviderIds = Array.from(
+      new Set(
+        providerConnections
+          .map((conn) => String(conn.provider || ""))
+          .filter(
+            (providerId) =>
+              isOpenAICompatibleProvider(providerId) || isAnthropicCompatibleProvider(providerId)
+          )
+      )
+    );
+
+    const compatibleStats = compatibleProviderIds.map((providerId) => {
+      const node = providerNodeMap.get(providerId);
+      const connections = providerConnections.filter((conn) => conn.provider === providerId);
+      const { connected, errors } = countConnections(connections);
+      const isOpenAICompatible = isOpenAICompatibleProvider(providerId);
+      const fallbackName =
+        node?.name ||
+        connections.find((conn) => conn.providerSpecificData?.nodeName)?.providerSpecificData
+          ?.nodeName ||
+        (isOpenAICompatible ? "OpenAI Compatible" : "Anthropic Compatible");
+
+      return {
+        id: providerId,
+        provider: {
+          id: providerId,
+          alias: providerId,
+          name: fallbackName,
+          color: isOpenAICompatible ? "#10A37F" : "#D97757",
+          textIcon: isOpenAICompatible ? "OC" : "AC",
+        },
+        total: connections.length,
+        connected,
+        errors,
+        modelCount: countModels(new Set([providerId])),
+        authType: "compatible",
+      };
+    });
+
+    const combinedStats = [...builtInStats, ...compatibleStats];
+
+    return {
+      allProviderStats: combinedStats,
+      visibleProviderStats: combinedStats.filter((item) => item.total > 0),
+    };
+  }, [allModels, providerConnections, providerNodes]);
 
   // Models for selected provider
   const selectedProviderModels = useMemo(() => {
@@ -105,8 +230,8 @@ export default function HomePageClient({ machineId }) {
     const providerKeys = new Set(
       [selectedProvider.id, selectedProvider.provider?.alias].filter(Boolean)
     );
-    return models.filter((m) => providerKeys.has(m.provider));
-  }, [selectedProvider, models]);
+    return allModels.filter((model) => providerKeys.has(model.provider));
+  }, [allModels, selectedProvider]);
 
   const quickStartLinks = [
     { label: t("documentation"), href: "/docs", icon: "menu_book" },
@@ -247,8 +372,8 @@ export default function HomePageClient({ machineId }) {
             <h2 className="text-lg font-semibold">{t("providersOverview")}</h2>
             <p className="text-sm text-text-muted">
               {t("configuredOf", {
-                configured: providerStats.filter((item) => item.total > 0).length,
-                total: providerStats.length,
+                configured: visibleProviderStats.length,
+                total: allProviderStats.length,
               })}
             </p>
           </div>
@@ -263,6 +388,9 @@ export default function HomePageClient({ machineId }) {
               <span className="flex items-center gap-1">
                 <span className="size-2 rounded-full bg-amber-500" /> {t("apiKeyLabel")}
               </span>
+              <span className="flex items-center gap-1">
+                <span className="size-2 rounded-full bg-orange-500" /> {tp("compatibleLabel")}
+              </span>
             </div>
             <Link
               href="/dashboard/providers"
@@ -275,7 +403,7 @@ export default function HomePageClient({ machineId }) {
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-          {providerStats.map((item) => (
+          {visibleProviderStats.map((item) => (
             <ProviderOverviewCard
               key={item.id}
               item={item}
@@ -306,6 +434,7 @@ function ProviderOverviewCard({ item, metrics, onClick }) {
   const [imgError, setImgError] = useState(false);
   const t = useTranslations("home");
   const tc = useTranslations("common");
+  const tp = useTranslations("providers");
 
   const statusVariant =
     item.errors > 0 ? "text-red-500" : item.connected > 0 ? "text-green-500" : "text-text-muted";
@@ -314,6 +443,7 @@ function ProviderOverviewCard({ item, metrics, onClick }) {
     free: { color: "bg-green-500", label: tc("free") },
     oauth: { color: "bg-blue-500", label: t("oauthLabel") },
     apikey: { color: "bg-amber-500", label: t("apiKeyLabel") },
+    compatible: { color: "bg-orange-500", label: tp("compatibleLabel") },
   };
   const authInfo = authTypeConfig[item.authType] || authTypeConfig.apikey;
 

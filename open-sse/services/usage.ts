@@ -4,6 +4,14 @@
 
 import { PROVIDERS } from "../config/constants.ts";
 import { safePercentage } from "@/shared/utils/formatting";
+import { getCompatibleUsage, isCompatibleProvider } from "./compatibleUsage.ts";
+import {
+  getFieldValue,
+  parseResetTime,
+  toNumber,
+  toRecord,
+  type JsonRecord,
+} from "./usageShared.ts";
 
 // GitHub API config
 const GITHUB_CONFIG = {
@@ -45,7 +53,6 @@ const KIMI_CONFIG = {
   apiVersion: "2023-06-01",
 };
 
-type JsonRecord = Record<string, unknown>;
 type UsageQuota = {
   used: number;
   total: number;
@@ -55,25 +62,6 @@ type UsageQuota = {
   unlimited: boolean;
   displayName?: string;
 };
-
-function toRecord(value: unknown): JsonRecord {
-  return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : {};
-}
-
-function toNumber(value: unknown, fallback = 0): number {
-  const parsed =
-    typeof value === "number"
-      ? value
-      : typeof value === "string" && value.trim().length > 0
-        ? Number(value)
-        : Number.NaN;
-  return Number.isFinite(parsed) ? parsed : fallback;
-}
-
-function getFieldValue(source: unknown, snakeKey: string, camelKey: string): unknown {
-  const obj = toRecord(source);
-  return obj[snakeKey] ?? obj[camelKey] ?? null;
-}
 
 function clampPercentage(value: number): number {
   return Math.max(0, Math.min(100, value));
@@ -86,7 +74,8 @@ function toDisplayLabel(value: string): string {
     .filter(Boolean)
     .map((part) => {
       if (/^pro\+$/i.test(part)) return "Pro+";
-      if (/^[a-z]{2,}$/.test(part)) return part.charAt(0).toUpperCase() + part.slice(1).toLowerCase();
+      if (/^[a-z]{2,}$/.test(part))
+        return part.charAt(0).toUpperCase() + part.slice(1).toLowerCase();
       return part;
     })
     .join(" ")
@@ -105,7 +94,11 @@ function shouldDisplayGitHubQuota(quota: UsageQuota | null): quota is UsageQuota
  * @returns {Promise<unknown>} Usage data with quotas
  */
 export async function getUsageForProvider(connection) {
-  const { provider, accessToken, providerSpecificData } = connection;
+  const { provider, accessToken, apiKey, providerSpecificData } = connection;
+
+  if (isCompatibleProvider(provider)) {
+    return await getCompatibleUsage(provider, apiKey, providerSpecificData);
+  }
 
   switch (provider) {
     case "github":
@@ -128,36 +121,6 @@ export async function getUsageForProvider(connection) {
       return await getIflowUsage(accessToken);
     default:
       return { message: `Usage API not implemented for ${provider}` };
-  }
-}
-
-/**
- * Parse reset date/time to ISO string
- * Handles multiple formats: Unix timestamp (ms), ISO date string, etc.
- */
-function parseResetTime(resetValue) {
-  if (!resetValue) return null;
-
-  try {
-    // If it's already a Date object
-    if (resetValue instanceof Date) {
-      return resetValue.toISOString();
-    }
-
-    // If it's a number (Unix timestamp in milliseconds)
-    if (typeof resetValue === "number") {
-      return new Date(resetValue).toISOString();
-    }
-
-    // If it's a string (ISO date or parseable date string)
-    if (typeof resetValue === "string") {
-      return new Date(resetValue).toISOString();
-    }
-
-    return null;
-  } catch (error) {
-    console.warn(`Failed to parse reset time: ${resetValue}`, error);
-    return null;
   }
 }
 
@@ -200,7 +163,9 @@ async function getGitHubUsage(accessToken, providerSpecificData) {
     if (dataRecord.quota_snapshots) {
       // Paid plan format
       const snapshots = toRecord(dataRecord.quota_snapshots);
-      const resetAt = parseResetTime(getFieldValue(dataRecord, "quota_reset_date", "quotaResetDate"));
+      const resetAt = parseResetTime(
+        getFieldValue(dataRecord, "quota_reset_date", "quotaResetDate")
+      );
       const premiumQuota = formatGitHubQuotaSnapshot(snapshots.premium_interactions, resetAt);
       const chatQuota = formatGitHubQuotaSnapshot(snapshots.chat, resetAt);
       const completionsQuota = formatGitHubQuotaSnapshot(snapshots.completions, resetAt);
@@ -225,7 +190,11 @@ async function getGitHubUsage(accessToken, providerSpecificData) {
       // Free/limited plan format
       const monthlyQuotas = toRecord(dataRecord.monthly_quotas);
       const usedQuotas = toRecord(dataRecord.limited_user_quotas);
-      const resetDate = getFieldValue(dataRecord, "limited_user_reset_date", "limitedUserResetDate");
+      const resetDate = getFieldValue(
+        dataRecord,
+        "limited_user_reset_date",
+        "limitedUserResetDate"
+      );
       const resetAt = parseResetTime(resetDate);
       const quotas: Record<string, UsageQuota> = {};
 
@@ -327,11 +296,7 @@ function inferGitHubPlanName(data: JsonRecord, premiumQuota: UsageQuota | null):
     toNumber(getFieldValue(monthlyQuotas, "premium_interactions", "premiumInteractions"), 0);
   const chatTotal = toNumber(getFieldValue(monthlyQuotas, "chat", "chat"), 0);
 
-  if (
-    combined.includes("PRO+") ||
-    combined.includes("PRO_PLUS") ||
-    combined.includes("PROPLUS")
-  ) {
+  if (combined.includes("PRO+") || combined.includes("PRO_PLUS") || combined.includes("PROPLUS")) {
     return "Copilot Pro+";
   }
   if (combined.includes("ENTERPRISE")) return "Copilot Enterprise";

@@ -633,6 +633,15 @@ export const USAGE_SUPPORTED_PROVIDERS = [
   "kimi-coding",
 ];
 
+export function supportsProviderUsageMonitoring(providerId) {
+  return (
+    typeof providerId === "string" &&
+    (USAGE_SUPPORTED_PROVIDERS.includes(providerId) ||
+      isOpenAICompatibleProvider(providerId) ||
+      isAnthropicCompatibleProvider(providerId))
+  );
+}
+
 // ── Zod validation at module load (Phase 7.2) ──
 import { validateProviders } from "../validation/providerSchema";
 

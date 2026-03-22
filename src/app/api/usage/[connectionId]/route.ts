@@ -9,6 +9,10 @@ import { getExecutor } from "@omniroute/open-sse/executors/index.ts";
 import { syncToCloud } from "@/lib/cloudSync";
 import { runWithProxyContext } from "@omniroute/open-sse/utils/proxyFetch.ts";
 import { setQuotaCache } from "@/domain/quotaCache";
+import {
+  isAnthropicCompatibleProvider,
+  isOpenAICompatibleProvider,
+} from "@/shared/constants/providers";
 
 function isRecord(value: unknown): value is Record<string, any> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -126,30 +130,36 @@ export async function GET(
       return Response.json({ error: "Connection not found" }, { status: 404 });
     }
 
-    // Only OAuth connections have usage APIs
-    if (connection.authType !== "oauth") {
+    const providerId = typeof connection.provider === "string" ? connection.provider : "";
+    const isCompatibleApiKeyConnection =
+      connection.authType === "apikey" &&
+      (isOpenAICompatibleProvider(providerId) || isAnthropicCompatibleProvider(providerId));
+
+    if (connection.authType !== "oauth" && !isCompatibleApiKeyConnection) {
       return Response.json({ message: "Usage not available for API key connections" });
     }
 
     // Refresh credentials if needed using executor
-    let refreshed = false;
-    try {
-      const result = await refreshAndUpdateCredentials(connection);
-      connection = result.connection;
-      refreshed = result.refreshed;
+    if (connection.authType === "oauth") {
+      let refreshed = false;
+      try {
+        const result = await refreshAndUpdateCredentials(connection);
+        connection = result.connection;
+        refreshed = result.refreshed;
 
-      // Sync to cloud only if token was refreshed
-      if (refreshed) {
-        await syncToCloudIfEnabled();
+        // Sync to cloud only if token was refreshed
+        if (refreshed) {
+          await syncToCloudIfEnabled();
+        }
+      } catch (refreshError) {
+        console.error("[Usage API] Credential refresh failed:", refreshError);
+        return Response.json(
+          {
+            error: `Credential refresh failed: ${(refreshError as any).message}`,
+          },
+          { status: 401 }
+        );
       }
-    } catch (refreshError) {
-      console.error("[Usage API] Credential refresh failed:", refreshError);
-      return Response.json(
-        {
-          error: `Credential refresh failed: ${(refreshError as any).message}`,
-        },
-        { status: 401 }
-      );
     }
 
     // Resolve proxy for this connection (key → combo → provider → global → direct)
@@ -179,7 +189,7 @@ export async function GET(
       errorMessage.includes("re-authenticate") ||
       errorMessage.includes("unauthorized");
 
-    if (isAuthError && connection.testStatus !== "expired") {
+    if (connection.authType === "oauth" && isAuthError && connection.testStatus !== "expired") {
       try {
         await updateProviderConnection(connection.id as string, {
           testStatus: "expired",

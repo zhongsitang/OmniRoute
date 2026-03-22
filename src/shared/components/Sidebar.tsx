@@ -245,6 +245,17 @@ export default function Sidebar({
         >
           {navItems.map(renderNavLink)}
 
+          {/* System section */}
+          <div className="pt-4 mt-2">
+            {!collapsed && (
+              <p className="px-4 text-xs font-semibold text-text-muted/60 uppercase tracking-wider mb-2">
+                System
+              </p>
+            )}
+            {collapsed && <div className="border-t border-black/5 dark:border-white/5 mb-2" />}
+            {systemItems.map(renderNavLink)}
+          </div>
+
           {/* CLI section */}
           <div className="pt-4 mt-2">
             {!collapsed && (
@@ -268,17 +279,6 @@ export default function Sidebar({
               {debugItems.map(renderNavLink)}
             </div>
           )}
-
-          {/* System section */}
-          <div className="pt-4 mt-2">
-            {!collapsed && (
-              <p className="px-4 text-xs font-semibold text-text-muted/60 uppercase tracking-wider mb-2">
-                System
-              </p>
-            )}
-            {collapsed && <div className="border-t border-black/5 dark:border-white/5 mb-2" />}
-            {systemItems.map(renderNavLink)}
-          </div>
 
           <div className="pt-4 mt-2">
             {!collapsed && (

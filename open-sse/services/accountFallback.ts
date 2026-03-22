@@ -147,6 +147,7 @@ export function parseRetryAfterFromBody(responseBody) {
 
   // OpenAI: "Please retry after 20s" in message
   const msg = body.error?.message || body.message || "";
+  const reasonCode = body.error?.reason || body.error?.code || body.reason || body.code || "";
   const retryMatch = msg.match(/retry\s+after\s+(\d+)\s*s/i);
   if (retryMatch) {
     return {
@@ -155,14 +156,8 @@ export function parseRetryAfterFromBody(responseBody) {
     };
   }
 
-  // Anthropic: error type classification
   const errorType = body.error?.type || body.type || "";
-  if (errorType === "rate_limit_error") {
-    return { retryAfterMs: null, reason: RateLimitReason.RATE_LIMIT_EXCEEDED };
-  }
-
-  // Classify by error message keywords
-  const reason = classifyErrorText(msg || errorType);
+  const reason = classifyErrorText([msg, errorType, reasonCode].filter(Boolean).join(" "));
   return { retryAfterMs: null, reason };
 }
 
@@ -195,8 +190,21 @@ export function classifyErrorText(errorText) {
   const lower = String(errorText).toLowerCase();
 
   if (
+    lower.includes("daily usage limit exceeded") ||
+    lower.includes("daily limit exceeded") ||
+    lower.includes("daily_limit_exceeded") ||
+    lower.includes("weekly limit exceeded") ||
+    lower.includes("weekly_limit_exceeded") ||
+    lower.includes("monthly limit exceeded") ||
+    lower.includes("monthly_limit_exceeded") ||
+    lower.includes("usage limit exceeded") ||
+    lower.includes("quota exhausted") ||
     lower.includes("quota exceeded") ||
     lower.includes("quota depleted") ||
+    lower.includes("insufficient_quota") ||
+    lower.includes("credit balance") ||
+    lower.includes("credits exhausted") ||
+    lower.includes("hard limit") ||
     lower.includes("billing")
   ) {
     return RateLimitReason.QUOTA_EXHAUSTED;
@@ -280,6 +288,10 @@ export function getQuotaCooldown(backoffLevel = 0) {
   return Math.min(cooldown, BACKOFF_CONFIG.max);
 }
 
+function getQuotaExhaustedCooldown(backoffLevel = 0) {
+  return Math.max(COOLDOWN_MS.paymentRequired, getBackoffDuration(backoffLevel));
+}
+
 /**
  * Check if error should trigger account fallback (switch to next account)
  * @param {number} status - HTTP status code
@@ -300,6 +312,7 @@ export function checkFallbackError(
   if (errorText) {
     const errorStr = typeof errorText === "string" ? errorText : JSON.stringify(errorText);
     const lowerError = errorStr.toLowerCase();
+    const reason = classifyErrorText(errorStr);
 
     if (lowerError.includes("no credentials")) {
       return {
@@ -317,16 +330,22 @@ export function checkFallbackError(
       };
     }
 
-    // Rate limit keywords - exponential backoff
+    if (reason === RateLimitReason.QUOTA_EXHAUSTED) {
+      const newLevel = Math.min(backoffLevel + 1, BACKOFF_CONFIG.maxLevel);
+      return {
+        shouldFallback: true,
+        cooldownMs: getQuotaExhaustedCooldown(backoffLevel),
+        newBackoffLevel: newLevel,
+        reason,
+      };
+    }
+
+    // Rate limit / capacity keywords - short exponential backoff
     if (
-      lowerError.includes("rate limit") ||
-      lowerError.includes("too many requests") ||
-      lowerError.includes("quota exceeded") ||
-      lowerError.includes("capacity") ||
-      lowerError.includes("overloaded")
+      reason === RateLimitReason.RATE_LIMIT_EXCEEDED ||
+      reason === RateLimitReason.MODEL_CAPACITY
     ) {
       const newLevel = Math.min(backoffLevel + 1, BACKOFF_CONFIG.maxLevel);
-      const reason = classifyErrorText(errorStr);
       return {
         shouldFallback: true,
         cooldownMs: getQuotaCooldown(backoffLevel),
@@ -405,6 +424,17 @@ export function checkFallbackError(
     cooldownMs: COOLDOWN_MS.transient,
     reason: RateLimitReason.UNKNOWN,
   };
+}
+
+/**
+ * Shared semantic check for quota exhaustion across providers.
+ * Some providers signal exhausted budget with 402 or custom error text
+ * instead of a canonical 429 response.
+ */
+export function isQuotaExhaustionFailure(status, errorText) {
+  const textReason = classifyErrorText(errorText);
+  if (textReason === RateLimitReason.QUOTA_EXHAUSTED) return true;
+  return status === HTTP_STATUS.PAYMENT_REQUIRED;
 }
 
 // ─── Account State Management ───────────────────────────────────────────────

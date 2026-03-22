@@ -3,6 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import Badge from "@/shared/components/Badge";
+import { Skeleton } from "@/shared/components/Loading";
 import ProviderUsageContent from "./ProviderUsageContent";
 import {
   formatLastUsed,
@@ -43,6 +44,53 @@ export default function ProviderUsageRow({
   const providerLabel = providerMeta.providerKind;
   const providerHref = `/dashboard/providers/${encodeURIComponent(connection.provider)}`;
   const lastUsedText = formatLastUsed(connection.lastUsedAt, t, locale);
+  const showLoadingSkeleton = isLoading && !usageEntry && !error;
+
+  if (showLoadingSkeleton) {
+    return (
+      <div
+        className={`items-center px-4 py-3.5 ${
+          !isLast ? "border-b border-black/[0.04] dark:border-white/[0.05]" : ""
+        }`}
+        style={{ display: "grid", gridTemplateColumns: tableGridColumns }}
+      >
+        <div className="flex items-center gap-2.5 min-w-0">
+          <Skeleton className="size-8 rounded-lg shrink-0" />
+          <div className="min-w-0 flex-1 space-y-1.5">
+            <Skeleton className="h-3.5 w-28 max-w-[80%]" />
+            <div className="flex items-center gap-1.5">
+              <Skeleton className="h-5 w-14 rounded-full" />
+              <Skeleton className="h-3 w-20 max-w-[45%]" />
+            </div>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap gap-x-3 gap-y-2 pr-3">
+          <div className="min-w-[220px] shrink-0">
+            <div className="flex items-center gap-1.5">
+              <Skeleton className="h-6 w-16 rounded" />
+              <Skeleton className="h-1.5 flex-1 min-w-[120px] rounded-sm" />
+              <Skeleton className="h-3 w-10" />
+            </div>
+          </div>
+          <div className="min-w-[120px] shrink-0">
+            <div className="flex items-center gap-2">
+              <Skeleton className="h-5 w-20 rounded" />
+              <Skeleton className="h-3 w-16" />
+            </div>
+          </div>
+        </div>
+
+        <div className="flex justify-center">
+          <Skeleton className="h-3 w-14" />
+        </div>
+
+        <div className="flex justify-center">
+          <Skeleton className="size-6 rounded-md" />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div

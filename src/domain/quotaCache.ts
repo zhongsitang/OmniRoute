@@ -101,6 +101,10 @@ function clampPercent(value: number): number {
   return Math.max(0, Math.min(100, value));
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 function normalizeWindowKey(value: unknown): string {
   if (typeof value !== "string") return "";
   return value
@@ -154,6 +158,23 @@ function earliestResetAt(quotas: Record<string, QuotaInfo>): string | null {
   return earliest;
 }
 
+function earliestExhaustedResetAt(quotas: Record<string, QuotaInfo>): string | null {
+  let earliest: string | null = null;
+  let earliestMs = Infinity;
+  const now = Date.now();
+
+  for (const q of Object.values(quotas)) {
+    if (q.remainingPercentage > 0 || !q.resetAt) continue;
+    const ms = parseDate(q.resetAt);
+    if (ms !== null && ms > now && ms < earliestMs) {
+      earliestMs = ms;
+      earliest = q.resetAt;
+    }
+  }
+
+  return earliest;
+}
+
 function normalizeQuotas(rawQuotas: Record<string, any>): Record<string, QuotaInfo> {
   const result: Record<string, QuotaInfo> = {};
   for (const [key, q] of Object.entries(rawQuotas)) {
@@ -167,6 +188,44 @@ function normalizeQuotas(rawQuotas: Record<string, any>): Record<string, QuotaIn
     }
   }
   return result;
+}
+
+function extractQuotasFromUsagePayload(usage: unknown): Record<string, QuotaInfo> | null {
+  if (!isRecord(usage)) return null;
+
+  if (isRecord(usage.quotas)) {
+    return normalizeQuotas(usage.quotas as Record<string, any>);
+  }
+
+  if (
+    usage.usageType === "compatible-balance" &&
+    isRecord(usage.balance) &&
+    usage.balance.kind === "periodic" &&
+    typeof usage.balance.period === "string"
+  ) {
+    const period = usage.balance.period.trim().toLowerCase();
+    const limit =
+      typeof usage.balance.limit === "number" && Number.isFinite(usage.balance.limit)
+        ? usage.balance.limit
+        : NaN;
+    const remaining =
+      typeof usage.balance.remaining === "number" && Number.isFinite(usage.balance.remaining)
+        ? usage.balance.remaining
+        : NaN;
+
+    if (!period || !Number.isFinite(limit) || limit <= 0 || !Number.isFinite(remaining)) {
+      return null;
+    }
+
+    return {
+      [period]: {
+        remainingPercentage: clampPercent((remaining / limit) * 100),
+        resetAt: typeof usage.balance.resetAt === "string" ? usage.balance.resetAt : null,
+      },
+    };
+  }
+
+  return null;
 }
 
 // ─── Public API ─────────────────────────────────────────────────────────────
@@ -192,10 +251,38 @@ export function setQuotaCache(
 }
 
 /**
+ * Store quota data from a normalized usage payload.
+ * Supports both quota-window payloads and compatible provider balance payloads.
+ */
+export function setQuotaCacheFromUsage(connectionId: string, provider: string, usage: unknown) {
+  const quotas = extractQuotasFromUsagePayload(usage);
+  if (!quotas || Object.keys(quotas).length === 0) return null;
+  setQuotaCache(connectionId, provider, quotas);
+  return cache.get(connectionId) || null;
+}
+
+/**
  * Get cached quota entry (returns null if not cached).
  */
 export function getQuotaCache(connectionId: string): QuotaCacheEntry | null {
   return cache.get(connectionId) || null;
+}
+
+/**
+ * Return the earliest future quota reset for exhausted windows on an account.
+ * Falls back to the synthetic nextResetAt for 429-only entries.
+ */
+export function getQuotaResetAt(connectionId: string): string | null {
+  const entry = cache.get(connectionId);
+  if (!entry) return null;
+
+  const fromQuotas = earliestExhaustedResetAt(entry.quotas);
+  if (fromQuotas) return fromQuotas;
+
+  if (!entry.nextResetAt) return null;
+  const resetMs = parseDate(entry.nextResetAt);
+  if (resetMs === null || resetMs <= Date.now()) return null;
+  return entry.nextResetAt;
 }
 
 /**
@@ -266,17 +353,30 @@ export function getQuotaWindowStatus(
 }
 
 /**
- * Mark an account as quota-exhausted from a 429 response (no quota data available).
- * Uses 5-minute fixed TTL since we don't know the actual resetAt.
+ * Mark an account as quota-exhausted from a 429 response.
+ * Uses fixed TTL when resetAt is unknown, or exact resetAt when available.
  */
-export function markAccountExhaustedFrom429(connectionId: string, provider: string) {
+export function markAccountExhaustedFrom429(
+  connectionId: string,
+  provider: string,
+  resetAt: string | null = null
+) {
+  const existing = cache.get(connectionId);
+  const exactResetAt = (() => {
+    if (typeof resetAt === "string") {
+      const parsed = parseDate(resetAt);
+      if (parsed !== null && parsed > Date.now()) return resetAt;
+    }
+    return earliestExhaustedResetAt(existing?.quotas || {}) || null;
+  })();
+
   cache.set(connectionId, {
     connectionId,
     provider,
-    quotas: {},
+    quotas: existing?.quotas || {},
     fetchedAt: Date.now(),
     exhausted: true,
-    nextResetAt: null,
+    nextResetAt: exactResetAt,
   });
 }
 

@@ -4,6 +4,7 @@ import { useState, useMemo, useEffect } from "react";
 import PropTypes from "prop-types";
 import Modal from "./Modal";
 import { getModelsByProviderId, PROVIDER_ID_TO_ALIAS } from "@/shared/constants/models";
+import { getProviderDisplayName } from "@/lib/display/names";
 import {
   OAUTH_PROVIDERS,
   FREE_PROVIDERS,
@@ -138,7 +139,7 @@ export default function ModelSelectModal({
 
         if (allModels.length > 0) {
           const matchedNode = providerNodes.find((node) => node.id === providerId);
-          const displayName = matchedNode?.name || providerInfo.name;
+          const displayName = getProviderDisplayName(providerId, matchedNode);
 
           groups[providerId] = {
             name: displayName,
@@ -149,8 +150,8 @@ export default function ModelSelectModal({
         }
       } else if (isCustomProvider) {
         const matchedNode = providerNodes.find((node) => node.id === providerId);
-        const displayName = matchedNode?.name || providerInfo.name;
-        const nodePrefix = matchedNode?.prefix || providerId; // Consider a more user-friendly fallback if providerId is a UUID
+        const displayName = getProviderDisplayName(providerId, matchedNode);
+        const nodePrefix = matchedNode?.prefix || displayName;
 
         const nodeModels = Object.entries(modelAliases as Record<string, string>)
           .filter(([, fullModel]: [string, string]) => fullModel.startsWith(`${providerId}/`))

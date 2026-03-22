@@ -1,10 +1,12 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { getDefaultPricing, formatCost } from "@/shared/constants/pricing";
+import { getDefaultPricing } from "@/shared/constants/pricing";
+import { getProviderDisplayName } from "@/lib/display/names";
 
 export default function PricingModal({ isOpen, onClose, onSave }) {
   const [pricingData, setPricingData] = useState({});
+  const [providerNodes, setProviderNodes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
@@ -17,9 +19,18 @@ export default function PricingModal({ isOpen, onClose, onSave }) {
   const loadPricing = async () => {
     setLoading(true);
     try {
-      const response = await fetch("/api/pricing");
-      if (response.ok) {
-        const data = await response.json();
+      const [pricingRes, nodesRes] = await Promise.all([
+        fetch("/api/pricing"),
+        fetch("/api/provider-nodes"),
+      ]);
+
+      if (nodesRes.ok) {
+        const nodesData = await nodesRes.json();
+        setProviderNodes(nodesData.nodes || []);
+      }
+
+      if (pricingRes.ok) {
+        const data = await pricingRes.json();
         setPricingData(data);
       } else {
         // Fallback to defaults
@@ -125,10 +136,11 @@ export default function PricingModal({ isOpen, onClose, onSave }) {
               {/* Pricing Tables */}
               {allProviders.map((provider) => {
                 const models = Object.keys(pricingData[provider]).sort();
+                const providerLabel = getProviderDisplayName(provider, providerNodes);
                 return (
                   <div key={provider} className="border border-border rounded-lg overflow-hidden">
                     <div className="bg-bg-subtle px-4 py-2 font-semibold text-sm">
-                      {provider.toUpperCase()}
+                      {providerLabel}
                     </div>
                     <div className="overflow-x-auto">
                       <table className="w-full text-sm">

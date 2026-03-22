@@ -1,20 +1,24 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
+import { useState, useEffect, useMemo } from "react";
 import Card from "@/shared/components/Card";
 import PricingModal from "@/shared/components/PricingModal";
 import { useTranslations } from "next-intl";
+import { getProviderDisplayName } from "@/lib/display/names";
 
 export default function PricingSettingsPage() {
-  const router = useRouter();
   const [showModal, setShowModal] = useState(false);
   const [currentPricing, setCurrentPricing] = useState(null);
+  const [providerNodes, setProviderNodes] = useState([]);
   const [loading, setLoading] = useState(true);
   const t = useTranslations("settings");
 
   useEffect(() => {
     loadPricing();
+    fetch("/api/provider-nodes")
+      .then((r) => (r.ok ? r.json() : { nodes: [] }))
+      .then((d) => setProviderNodes(d.nodes || []))
+      .catch(() => {});
   }, []);
 
   const loadPricing = async () => {
@@ -46,11 +50,16 @@ export default function PricingSettingsPage() {
     return count;
   };
 
-  // Get providers list
-  const getProviders = () => {
+  const providers = useMemo(() => {
     if (!currentPricing) return [];
     return Object.keys(currentPricing).sort();
-  };
+  }, [currentPricing]);
+
+  const providerLabels = useMemo(() => {
+    return Object.fromEntries(
+      providers.map((provider) => [provider, getProviderDisplayName(provider, providerNodes)])
+    );
+  }, [providers, providerNodes]);
 
   return (
     <div className="max-w-6xl mx-auto p-6 space-y-6">
@@ -76,7 +85,7 @@ export default function PricingSettingsPage() {
         </Card>
         <Card className="p-4">
           <div className="text-text-muted text-sm uppercase font-semibold">{t("providers")}</div>
-          <div className="text-2xl font-bold mt-1">{loading ? "..." : getProviders().length}</div>
+          <div className="text-2xl font-bold mt-1">{loading ? "..." : providers.length}</div>
         </Card>
         <Card className="p-4">
           <div className="text-text-muted text-sm uppercase font-semibold">{t("status")}</div>
@@ -140,7 +149,7 @@ export default function PricingSettingsPage() {
               .slice(0, 5)
               .map((provider) => (
                 <div key={provider} className="text-sm">
-                  <span className="font-semibold">{provider.toUpperCase()}:</span>{" "}
+                  <span className="font-semibold">{providerLabels[provider] || provider}:</span>{" "}
                   <span className="text-text-muted">
                     {Object.keys(currentPricing[provider]).length} {t("models")}
                   </span>

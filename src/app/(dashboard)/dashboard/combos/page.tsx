@@ -196,6 +196,27 @@ const COMBO_TEMPLATE_FALLBACK = {
     "Round-robin across all free providers: Kiro, iFlow, Qwen, Gemini CLI. Zero cost, never stops.",
 };
 
+const TEST_PROTOCOL_OPTIONS = [
+  {
+    value: "responses",
+    label: "Responses API",
+    description: "Best for Codex and other Responses-native models.",
+    icon: "dataset",
+  },
+  {
+    value: "chat",
+    label: "Chat Completions",
+    description: "Use OpenAI-compatible chat protocol for standard chat models.",
+    icon: "chat",
+  },
+  {
+    value: "claude",
+    label: "Claude Messages",
+    description: "Use Anthropic Claude Messages protocol for Claude-compatible tests.",
+    icon: "forum",
+  },
+];
+
 const COMBO_TEMPLATES = [
   {
     id: "free-stack",
@@ -288,6 +309,16 @@ function getI18nOrFallback(t, key, fallback) {
   return fallback;
 }
 
+function getTestProtocolOption(t, protocol) {
+  const option = TEST_PROTOCOL_OPTIONS.find((entry) => entry.value === protocol);
+  if (!option) return TEST_PROTOCOL_OPTIONS[0];
+  return {
+    ...option,
+    label: getI18nOrFallback(t, `testProtocol.${protocol}.label`, option.label),
+    description: getI18nOrFallback(t, `testProtocol.${protocol}.description`, option.description),
+  };
+}
+
 function getStrategyGuideText(t, strategy, field) {
   const strategyFallback =
     STRATEGY_GUIDANCE_FALLBACK[strategy] || STRATEGY_GUIDANCE_FALLBACK.priority;
@@ -338,6 +369,8 @@ export default function CombosPage() {
   const [metrics, setMetrics] = useState({});
   const [testResults, setTestResults] = useState(null);
   const [testingCombo, setTestingCombo] = useState(null);
+  const [testTargetCombo, setTestTargetCombo] = useState(null);
+  const [selectedTestProtocol, setSelectedTestProtocol] = useState("responses");
   const { copied, copy } = useCopyToClipboard();
   const notify = useNotificationStore();
   const [proxyTargetCombo, setProxyTargetCombo] = useState(null);
@@ -467,21 +500,41 @@ export default function CombosPage() {
     await handleCreate(data);
   };
 
-  const handleTestCombo = async (combo) => {
+  const handleOpenTestComboModal = (combo) => {
+    setSelectedTestProtocol("responses");
+    setTestResults(null);
+    setTestingCombo(null);
+    setTestTargetCombo(combo);
+  };
+
+  const handleTestCombo = async (combo, protocol = selectedTestProtocol) => {
     setTestingCombo(combo.name);
     setTestResults(null);
     try {
       const res = await fetch("/api/combos/test", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ comboName: combo.name }),
+        body: JSON.stringify({ comboName: combo.name, protocol }),
       });
       const data = await res.json();
       setTestResults(data);
     } catch (error) {
       setTestResults({ error: t("testFailed") });
       notify.error(t("testFailed"));
+    } finally {
+      setTestingCombo(null);
     }
+  };
+
+  const handleCloseTestComboModal = () => {
+    setTestTargetCombo(null);
+    setTestResults(null);
+    setTestingCombo(null);
+  };
+
+  const handleConfirmTestCombo = async () => {
+    if (!testTargetCombo) return;
+    await handleTestCombo(testTargetCombo, selectedTestProtocol);
   };
 
   const handleToggleCombo = async (combo) => {
@@ -516,6 +569,36 @@ export default function CombosPage() {
       globalThis.localStorage?.removeItem(COMBO_USAGE_GUIDE_STORAGE_KEY);
     } catch {}
   };
+
+  const isTestingTargetCombo = !!testTargetCombo && testingCombo === testTargetCombo.name;
+  const selectedProtocolOption = getTestProtocolOption(t, selectedTestProtocol);
+  const testStatusBadge = isTestingTargetCombo
+    ? {
+        icon: "progress_activity",
+        label: getI18nOrFallback(t, "testing", "Testing..."),
+        tone: "bg-primary/10 text-primary",
+        spin: true,
+      }
+    : testResults?.error
+      ? {
+          icon: "error",
+          label: getI18nOrFallback(t, "testFailed", "Test failed"),
+          tone: "bg-red-500/10 text-red-500",
+          spin: false,
+        }
+      : testResults
+        ? {
+            icon: "check_circle",
+            label: getI18nOrFallback(t, "testProtocol.resultsReady", "Results ready"),
+            tone: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
+            spin: false,
+          }
+        : {
+            icon: "radio_button_checked",
+            label: getI18nOrFallback(t, "testProtocol.ready", "Ready"),
+            tone: "bg-black/5 dark:bg-white/10 text-text-muted",
+            spin: false,
+          };
 
   if (loading) {
     return (
@@ -584,7 +667,7 @@ export default function CombosPage() {
                 variant="secondary"
                 icon="play_arrow"
                 onClick={() => {
-                  handleTestCombo({ name: recentlyCreatedCombo });
+                  handleOpenTestComboModal({ name: recentlyCreatedCombo });
                   setRecentlyCreatedCombo("");
                 }}
               >
@@ -620,7 +703,7 @@ export default function CombosPage() {
               onEdit={() => setEditingCombo(combo)}
               onDelete={() => handleDelete(combo.id)}
               onDuplicate={() => handleDuplicate(combo)}
-              onTest={() => handleTestCombo(combo)}
+              onTest={() => handleOpenTestComboModal(combo)}
               testing={testingCombo === combo.name}
               onProxy={() => setProxyTargetCombo(combo)}
               hasProxy={!!proxyConfig?.combos?.[combo.id]}
@@ -630,17 +713,178 @@ export default function CombosPage() {
         </div>
       )}
 
-      {/* Test Results Modal */}
-      {testResults && (
+      {testTargetCombo && (
         <Modal
-          isOpen={!!testResults}
-          onClose={() => {
-            setTestResults(null);
-            setTestingCombo(null);
-          }}
-          title={t("testResults", { name: testingCombo })}
+          isOpen={!!testTargetCombo}
+          onClose={handleCloseTestComboModal}
+          title={getI18nOrFallback(t, "testCombo", "Test combo")}
+          size="md"
+          footer={
+            <>
+              <Button variant="ghost" onClick={handleCloseTestComboModal}>
+                {tc("close")}
+              </Button>
+              <Button
+                icon="play_arrow"
+                onClick={handleConfirmTestCombo}
+                loading={isTestingTargetCombo}
+                disabled={isTestingTargetCombo}
+                className="min-w-[132px]"
+              >
+                {getI18nOrFallback(t, "testNow", "Test now")}
+              </Button>
+            </>
+          }
         >
-          <TestResultsView results={testResults} />
+          <div className="flex flex-col gap-4">
+            <div className="flex flex-wrap items-start justify-between gap-3 rounded-xl border border-black/10 dark:border-white/10 bg-black/[0.02] dark:bg-white/[0.02] px-4 py-3">
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-text-main">
+                  <code className="rounded bg-black/5 px-1.5 py-0.5 text-xs dark:bg-white/10">
+                    {testTargetCombo.name}
+                  </code>
+                </p>
+                <p className="text-xs text-text-muted mt-1">
+                  {getI18nOrFallback(
+                    t,
+                    "testProtocol.liveProbeHint",
+                    "Runs a live provider probe for the selected protocol and keeps the result area stable while it updates."
+                  )}
+                </p>
+              </div>
+              <div
+                className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-medium ${testStatusBadge.tone}`}
+              >
+                <span
+                  className={`material-symbols-outlined text-[14px] ${
+                    testStatusBadge.spin ? "animate-spin" : ""
+                  }`}
+                >
+                  {testStatusBadge.icon}
+                </span>
+                {testStatusBadge.label}
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-4">
+              <div className="grid gap-2">
+                <p className="text-sm font-medium text-text-main">
+                  {getI18nOrFallback(
+                    t,
+                    "testProtocol.prompt",
+                    "Select which protocol this combo health check should use."
+                  )}
+                </p>
+                <p className="text-xs text-text-muted -mt-1">
+                  {getI18nOrFallback(
+                    t,
+                    "testProtocol.protocolHint",
+                    "You can switch protocol at any time. The result panel keeps its place to avoid layout jumps."
+                  )}
+                </p>
+                <div className="grid gap-2">
+                  {TEST_PROTOCOL_OPTIONS.map((option) => {
+                    const localized = getTestProtocolOption(t, option.value);
+                    const active = selectedTestProtocol === option.value;
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        onClick={() => {
+                          if (isTestingTargetCombo) return;
+                          setSelectedTestProtocol(option.value);
+                        }}
+                        className={`text-left rounded-xl border px-4 py-3 transition-colors ${
+                          active
+                            ? "border-primary bg-primary/10"
+                            : "border-black/10 dark:border-white/10 hover:border-primary/40"
+                        }`}
+                        disabled={isTestingTargetCombo}
+                      >
+                        <div className="flex items-center gap-3">
+                          <span className="material-symbols-outlined text-[18px] text-primary">
+                            {localized.icon}
+                          </span>
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium text-text-main">{localized.label}</p>
+                            <p className="text-xs text-text-muted mt-0.5">
+                              {localized.description}
+                            </p>
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-black/10 dark:border-white/10 bg-black/[0.02] dark:bg-white/[0.02] p-4 min-h-[280px]">
+                <div className="flex items-center justify-between gap-3 border-b border-black/5 dark:border-white/5 pb-3">
+                  <div>
+                    <p className="text-sm font-medium text-text-main">
+                      {getI18nOrFallback(t, "testProtocol.liveResult", "Live result")}
+                    </p>
+                    <p className="text-xs text-text-muted mt-0.5">
+                      {getI18nOrFallback(
+                        t,
+                        "testProtocol.liveResultHint",
+                        "The content updates in place so the modal stays steady during a probe."
+                      )}
+                    </p>
+                  </div>
+                  <code className="shrink-0 rounded bg-primary/10 px-2 py-1 text-[11px] text-primary">
+                    {selectedProtocolOption.label}
+                  </code>
+                </div>
+
+                <div className="mt-4 max-h-[320px] overflow-y-auto pr-1">
+                  {isTestingTargetCombo ? (
+                    <div className="flex min-h-[220px] flex-col items-center justify-center gap-3 text-center">
+                      <span className="material-symbols-outlined animate-spin text-[28px] text-primary">
+                        progress_activity
+                      </span>
+                      <div>
+                        <p className="text-sm font-medium text-text-main">
+                          {getI18nOrFallback(t, "testing", "Testing...")}
+                        </p>
+                        <p className="text-xs text-text-muted mt-1">
+                          {getI18nOrFallback(
+                            t,
+                            "testProtocol.loadingHint",
+                            "Probing the selected protocol and waiting for live results."
+                          )}
+                        </p>
+                      </div>
+                    </div>
+                  ) : testResults ? (
+                    <TestResultsView results={testResults} />
+                  ) : (
+                    <div className="flex min-h-[220px] flex-col items-center justify-center gap-3 text-center">
+                      <span className="material-symbols-outlined text-[28px] text-text-muted">
+                        preview
+                      </span>
+                      <div>
+                        <p className="text-sm font-medium text-text-main">
+                          {getI18nOrFallback(
+                            t,
+                            "testProtocol.readyTitle",
+                            "Ready for a live probe"
+                          )}
+                        </p>
+                        <p className="text-xs text-text-muted mt-1">
+                          {getI18nOrFallback(
+                            t,
+                            "testProtocol.readyHint",
+                            "Choose a protocol on the left and run the test. Results will appear here without collapsing the modal."
+                          )}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
         </Modal>
       )}
 
@@ -1100,6 +1344,8 @@ function ComboCard({
 // Test Results View
 // ─────────────────────────────────────────────
 function TestResultsView({ results }) {
+  const t = useTranslations("combos");
+
   if (results.error) {
     return (
       <div className="flex items-center gap-2 text-red-500 text-sm">
@@ -1109,8 +1355,19 @@ function TestResultsView({ results }) {
     );
   }
 
+  const protocolOption = getTestProtocolOption(t, results.protocol || "responses");
+
   return (
     <div className="flex flex-col gap-2">
+      <div className="flex items-center gap-2 text-sm">
+        <span className="material-symbols-outlined text-primary text-[18px]">tune</span>
+        <span className="text-text-muted">
+          {getI18nOrFallback(t, "testProtocol.resultLabel", "Protocol")}:
+        </span>
+        <code className="text-xs bg-primary/10 text-primary px-1.5 py-0.5 rounded">
+          {protocolOption.label}
+        </code>
+      </div>
       {results.resolvedBy && (
         <div className="flex items-center gap-2 text-sm">
           <span className="material-symbols-outlined text-emerald-500 text-[18px]">

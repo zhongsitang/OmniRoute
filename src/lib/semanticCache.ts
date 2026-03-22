@@ -47,21 +47,89 @@ function getMemoryCache() {
 
 // ─── Signature Generation ─────────────────
 
+function normalizeValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((entry) => normalizeValue(entry));
+  if (!value || typeof value !== "object") return value ?? null;
+
+  return Object.keys(value as JsonRecord)
+    .sort()
+    .reduce<JsonRecord>((acc, key) => {
+      acc[key] = normalizeValue((value as JsonRecord)[key]);
+      return acc;
+    }, {});
+}
+
+function getHeaderValue(
+  headers: Headers | Record<string, unknown> | null | undefined,
+  name: string
+) {
+  if (!headers) return null;
+  if (typeof headers.get === "function") return headers.get(name);
+
+  const normalizedName = name.toLowerCase();
+  const entry = Object.entries(headers).find(([key]) => key.toLowerCase() === normalizedName);
+  const value = entry?.[1];
+
+  if (typeof value === "string") return value;
+  if (Array.isArray(value) && typeof value[0] === "string") return value[0];
+  return null;
+}
+
+function buildSignaturePayload(
+  model: string,
+  requestOrMessages: unknown,
+  temperature = 0,
+  topP = 1
+) {
+  if (Array.isArray(requestOrMessages)) {
+    return {
+      model,
+      messages: normalizeMessages(requestOrMessages),
+      temperature,
+      top_p: topP,
+    };
+  }
+
+  const body = asRecord(requestOrMessages);
+  return {
+    model,
+    messages: normalizeMessages(body.messages),
+    input: normalizeValue(body.input ?? null),
+    instructions: normalizeValue(body.instructions ?? null),
+    contents: normalizeValue(body.contents ?? null),
+    prompt: normalizeValue(body.prompt ?? null),
+    tools: normalizeValue(body.tools ?? null),
+    tool_choice: normalizeValue(body.tool_choice ?? null),
+    response_format: normalizeValue(body.response_format ?? null),
+    text: normalizeValue(body.text ?? null),
+    audio: normalizeValue(body.audio ?? null),
+    modalities: normalizeValue(body.modalities ?? null),
+    reasoning: normalizeValue(body.reasoning ?? null),
+    reasoning_effort: normalizeValue(body.reasoning_effort ?? null),
+    max_tokens: normalizeValue(body.max_tokens ?? null),
+    max_completion_tokens: normalizeValue(body.max_completion_tokens ?? null),
+    max_output_tokens: normalizeValue(body.max_output_tokens ?? null),
+    temperature: toNumber(body.temperature, temperature),
+    top_p: toNumber(body.top_p, topP),
+    frequency_penalty: normalizeValue(body.frequency_penalty ?? null),
+    presence_penalty: normalizeValue(body.presence_penalty ?? null),
+  };
+}
+
 /**
  * Generate deterministic cache signature from request params.
+ * Accepts either the legacy `messages` array or a full request body.
+ *
  * @param {string} model
- * @param {Array} messages - Normalized messages array
+ * @param {Array|object} requestOrMessages
  * @param {number} temperature
  * @param {number} topP
  * @returns {string} hex signature
  */
-export function generateSignature(model, messages, temperature = 0, topP = 1) {
-  const payload = JSON.stringify({
-    model,
-    messages: normalizeMessages(messages),
-    temperature,
-    top_p: topP,
-  });
+export function generateSignature(model, requestOrMessages, temperature = 0, topP = 1) {
+  const payload = JSON.stringify(
+    buildSignaturePayload(model, requestOrMessages, temperature, topP)
+  );
   return crypto.createHash("sha256").update(payload).digest("hex");
 }
 
@@ -309,7 +377,9 @@ export function getCacheStats() {
  * Only non-streaming, deterministic (temperature=0) requests.
  */
 export function isCacheable(body, headers) {
-  if (headers?.get?.("x-omniroute-no-cache") === "true") return false;
+  if (getHeaderValue(headers, "x-omniroute-no-cache") === "true") return false;
+  if (getHeaderValue(headers, "x-omniroute-live-probe") === "true") return false;
+  if (getHeaderValue(headers, "x-internal-test") === "combo-health-check") return false;
   if (body.stream !== false) return false;
   if ((body.temperature ?? 0) !== 0) return false;
   return true;

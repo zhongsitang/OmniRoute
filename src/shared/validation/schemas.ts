@@ -878,6 +878,7 @@ export const updateComboSchema = z
 
 export const testComboSchema = z.object({
   comboName: z.string().trim().min(1, "comboName is required"),
+  protocol: z.enum(["responses", "chat", "claude"]).optional(),
 });
 
 export const dbBackupRestoreSchema = z.object({

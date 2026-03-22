@@ -12,6 +12,12 @@
  * @module lib/display/names
  */
 
+import {
+  getProviderByAlias,
+  isAnthropicCompatibleProvider,
+  isOpenAICompatibleProvider,
+} from "@/shared/constants/providers";
+
 export interface ConnectionLike {
   id?: string | null;
   name?: string | null;
@@ -20,8 +26,35 @@ export interface ConnectionLike {
 }
 
 export interface ProviderNodeLike {
+  id?: string | null;
   name?: string | null;
   prefix?: string | null;
+}
+
+interface ProviderDisplayNameOptions {
+  anthropicCompatibleLabel?: string;
+  openAICompatibleLabel?: string;
+  unknownLabel?: string;
+}
+
+function toNonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+export function findProviderNode(
+  providerId: string | null | undefined,
+  providerNodes: ProviderNodeLike[] = []
+): ProviderNodeLike | null {
+  if (!providerId || !Array.isArray(providerNodes) || providerNodes.length === 0) {
+    return null;
+  }
+
+  return (
+    providerNodes.find(
+      (node) =>
+        toNonEmptyString(node?.id) === providerId || toNonEmptyString(node?.prefix) === providerId
+    ) || null
+  );
 }
 
 /**
@@ -45,25 +78,33 @@ export function getAccountDisplayName(conn: ConnectionLike): string {
 /**
  * Friendly display name for a provider node/ID.
  *
- * Priority: node.name → node.prefix → de-UUIDed providerId
- *
- * Dynamic compatible provider IDs like
- *   "openai-compatible-chat-02669115-2545-4896-b003-cb4dac09d441"
- * are rendered as "Compatible (openai)".
+ * Priority: built-in provider name → node.name → node.prefix → generic compatible label → providerId
  */
 export function getProviderDisplayName(
   providerId: string | null | undefined,
-  providerNode?: ProviderNodeLike | null
+  providerNodeOrNodes?: ProviderNodeLike | ProviderNodeLike[] | null,
+  options: ProviderDisplayNameOptions = {}
 ): string {
-  if (providerNode?.name?.trim()) return providerNode.name.trim();
-  if (providerNode?.prefix?.trim()) return providerNode.prefix.trim();
-  if (!providerId) return "Unknown Provider";
+  const providerNode = Array.isArray(providerNodeOrNodes)
+    ? findProviderNode(providerId, providerNodeOrNodes)
+    : providerNodeOrNodes;
 
-  // Simplify dynamic compatible provider IDs
-  const match = providerId.match(
-    /^(openai|anthropic)-compatible-(?:chat|responses)-[0-9a-f-]{10,}$/i
-  );
-  if (match) return `Compatible (${match[1]})`;
+  const providerInfo = providerId ? getProviderByAlias(providerId) : null;
+  if (providerInfo?.name) return providerInfo.name;
+
+  const nodeName = toNonEmptyString(providerNode?.name);
+  if (nodeName) return nodeName;
+
+  const nodePrefix = toNonEmptyString(providerNode?.prefix);
+  if (nodePrefix) return nodePrefix;
+
+  if (!providerId) return options.unknownLabel || "Unknown Provider";
+  if (isOpenAICompatibleProvider(providerId)) {
+    return options.openAICompatibleLabel || "OpenAI Compatible";
+  }
+  if (isAnthropicCompatibleProvider(providerId)) {
+    return options.anthropicCompatibleLabel || "Anthropic Compatible";
+  }
 
   return providerId;
 }

@@ -118,8 +118,9 @@ export default function ProviderUsageContent({
     t,
     usageEntry?.plan
   );
+  const showInitialLoading = isLoading && !usageEntry && !error;
 
-  if (isLoading) {
+  if (showInitialLoading) {
     return (
       <div className="flex items-center gap-1.5 text-text-muted text-xs">
         <span className="material-symbols-outlined animate-spin text-[14px]">

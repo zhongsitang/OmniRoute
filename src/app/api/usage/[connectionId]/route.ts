@@ -8,15 +8,11 @@ import { getUsageForProvider } from "@omniroute/open-sse/services/usage.ts";
 import { getExecutor } from "@omniroute/open-sse/executors/index.ts";
 import { syncToCloud } from "@/lib/cloudSync";
 import { runWithProxyContext } from "@omniroute/open-sse/utils/proxyFetch.ts";
-import { setQuotaCache } from "@/domain/quotaCache";
+import { setQuotaCacheFromUsage } from "@/domain/quotaCache";
 import {
   isAnthropicCompatibleProvider,
   isOpenAICompatibleProvider,
 } from "@/shared/constants/providers";
-
-function isRecord(value: unknown): value is Record<string, any> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
 
 /**
  * Sync to cloud if enabled
@@ -170,14 +166,9 @@ export async function GET(
       getUsageForProvider(connection)
     );
 
-    // Populate quota cache for quota-aware account selection
-    if (isRecord(usage?.quotas)) {
-      setQuotaCache(
-        connectionId,
-        connection.provider as string,
-        usage.quotas as Record<string, unknown>
-      );
-    }
+    // Populate quota cache for quota-aware account selection.
+    // Supports both classic quota windows and compatible-provider periodic balances.
+    setQuotaCacheFromUsage(connectionId, connection.provider as string, usage);
 
     // (#491) If the live usage check returned an auth error, sync the expired status
     // back to the DB so the Providers page reflects the same degraded state as

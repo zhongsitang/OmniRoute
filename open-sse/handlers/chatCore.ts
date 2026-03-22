@@ -95,6 +95,14 @@ export async function handleChatCore({
 }) {
   const { provider, model, extendedContext } = modelInfo;
   const startTime = Date.now();
+  const getClientHeader = (headerName: string): string | null => {
+    const headers = clientRawRequest?.headers;
+    if (!headers) return null;
+    if (typeof headers.get === "function") return headers.get(headerName);
+    const normalized = headerName.toLowerCase();
+    const entry = Object.entries(headers).find(([key]) => key.toLowerCase() === normalized);
+    return typeof entry?.[1] === "string" ? entry[1] : null;
+  };
   const persistFailureUsage = (statusCode: number, errorCode?: string | null) => {
     saveRequestUsage({
       provider: provider || "unknown",
@@ -177,7 +185,7 @@ export async function handleChatCore({
 
   // ── Phase 9.1: Semantic cache check (non-streaming, temp=0 only) ──
   if (isCacheable(body, clientRawRequest?.headers)) {
-    const signature = generateSignature(model, body.messages, body.temperature, body.top_p);
+    const signature = generateSignature(model, body);
     const cached = getCachedResponse(signature);
     if (cached) {
       log?.debug?.("CACHE", `Semantic cache HIT for ${model}`);
@@ -409,7 +417,11 @@ export async function handleChatCore({
   const streamController = createStreamController({ onDisconnect, log, provider, model });
 
   const dedupRequestBody = { ...translatedBody, model: `${provider}/${model}` };
-  const dedupEnabled = shouldDeduplicate(dedupRequestBody);
+  const dedupDisabled =
+    getClientHeader("x-omniroute-live-probe") === "true" ||
+    getClientHeader("x-internal-test") === "combo-health-check" ||
+    getClientHeader("x-omniroute-no-dedup") === "true";
+  const dedupEnabled = !dedupDisabled && shouldDeduplicate(dedupRequestBody);
   const dedupHash = dedupEnabled ? computeRequestHash(dedupRequestBody) : null;
 
   const executeProviderRequest = async (modelToCall = effectiveModel, allowDedup = false) => {
@@ -851,7 +863,7 @@ export async function handleChatCore({
 
     // ── Phase 9.1: Cache store (non-streaming, temp=0) ──
     if (isCacheable(body, clientRawRequest?.headers)) {
-      const signature = generateSignature(model, body.messages, body.temperature, body.top_p);
+      const signature = generateSignature(model, body);
       const tokensSaved = usage?.prompt_tokens + usage?.completion_tokens || 0;
       setCachedResponse(signature, model, translatedResponse, tokensSaved);
       log?.debug?.("CACHE", `Stored response for ${model} (${tokensSaved} tokens)`);

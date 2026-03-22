@@ -14,8 +14,13 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { Card } from "@/shared/components";
-import { AI_PROVIDERS } from "@/shared/constants/providers";
+import {
+  AI_PROVIDERS,
+  isAnthropicCompatibleProvider,
+  isOpenAICompatibleProvider,
+} from "@/shared/constants/providers";
 import { useTranslations } from "next-intl";
+import { getProviderDisplayName } from "@/lib/display/names";
 
 function formatUptime(seconds) {
   const d = Math.floor(seconds / 86400);
@@ -48,6 +53,7 @@ export default function HealthPage() {
   const [telemetry, setTelemetry] = useState(null);
   const [cache, setCache] = useState(null);
   const [signatureCache, setSignatureCache] = useState(null);
+  const [providerNodes, setProviderNodes] = useState([]);
   const [resetting, setResetting] = useState(false);
 
   const fetchHealth = useCallback(async () => {
@@ -69,11 +75,15 @@ export default function HealthPage() {
       fetch("/api/telemetry/summary").then((r) => r.json()),
       fetch("/api/cache/stats").then((r) => r.json()),
       fetch("/api/rate-limits").then((r) => r.json()),
+      fetch("/api/provider-nodes").then((r) => r.json()),
     ]);
     if (results[0].status === "fulfilled") setTelemetry(results[0].value);
     if (results[1].status === "fulfilled") setCache(results[1].value);
     if (results[2].status === "fulfilled" && results[2].value.cacheStats) {
       setSignatureCache(results[2].value.cacheStats);
+    }
+    if (results[3].status === "fulfilled") {
+      setProviderNodes(results[3].value.nodes || []);
     }
   }, []);
 
@@ -137,6 +147,20 @@ export default function HealthPage() {
   const { system, providerHealth, rateLimitStatus, lockouts } = data;
   const cbEntries = Object.entries(providerHealth || {});
   const lockoutEntries = Object.entries(lockouts || {});
+  const getProviderMeta = (providerId) => {
+    if (isOpenAICompatibleProvider(providerId)) {
+      return { color: "#10A37F", textIcon: "OC" };
+    }
+    if (isAnthropicCompatibleProvider(providerId)) {
+      return { color: "#D97757", textIcon: "AC" };
+    }
+    return AI_PROVIDERS[providerId] || null;
+  };
+  const getProviderLabel = (providerId) =>
+    getProviderDisplayName(providerId, providerNodes, {
+      openAICompatibleLabel: tp("openaiCompatibleName"),
+      anthropicCompatibleLabel: tp("anthropicCompatibleName"),
+    });
 
   return (
     <div className="p-6 space-y-6 max-w-6xl mx-auto">
@@ -418,8 +442,8 @@ export default function HealthPage() {
                     </p>
                     {unhealthy.map(([provider, cb]: [string, any]) => {
                       const style = CB_STYLES[cb.state] || CB_STYLES.OPEN;
-                      const providerInfo = AI_PROVIDERS[provider];
-                      const displayName = providerInfo?.name || provider;
+                      const providerInfo = getProviderMeta(provider);
+                      const displayName = getProviderLabel(provider);
                       return (
                         <div
                           key={provider}
@@ -473,8 +497,8 @@ export default function HealthPage() {
                     )}
                     <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-2">
                       {healthy.map(([provider]) => {
-                        const providerInfo = AI_PROVIDERS[provider];
-                        const displayName = providerInfo?.name || provider;
+                        const providerInfo = getProviderMeta(provider);
+                        const displayName = getProviderLabel(provider);
                         return (
                           <div
                             key={provider}
@@ -510,25 +534,8 @@ export default function HealthPage() {
             const connectionId = parts[1] || "";
             const model = parts.slice(2).join(":") || null;
 
-            // Resolve friendly name
-            let displayName;
-            let providerInfo = AI_PROVIDERS[providerId];
-
-            if (providerId.startsWith("openai-compatible-")) {
-              const customName = providerId.replace("openai-compatible-", "");
-              displayName = tp("openaiCompatibleName");
-              providerInfo = { color: "#10A37F", textIcon: "OC" };
-              if (customName.length > 12) displayName += ` (${customName.slice(0, 8)}…)`;
-              else if (customName) displayName += ` (${customName})`;
-            } else if (providerId.startsWith("anthropic-compatible-")) {
-              const customName = providerId.replace("anthropic-compatible-", "");
-              displayName = tp("anthropicCompatibleName");
-              providerInfo = { color: "#D97757", textIcon: "AC" };
-              if (customName.length > 12) displayName += ` (${customName.slice(0, 8)}…)`;
-              else if (customName) displayName += ` (${customName})`;
-            } else {
-              displayName = providerInfo?.name || providerId;
-            }
+            const displayName = getProviderLabel(providerId);
+            const providerInfo = getProviderMeta(providerId);
 
             return { providerId, displayName, providerInfo, connectionId, model };
           };

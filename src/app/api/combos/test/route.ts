@@ -28,7 +28,7 @@ export async function POST(request) {
     if (isValidationFailure(validation)) {
       return NextResponse.json({ error: validation.error }, { status: 400 });
     }
-    const { comboName } = validation.data;
+    const { comboName, protocol = "responses" } = validation.data;
 
     const combo = await getComboByName(comboName);
     if (!combo) {
@@ -47,19 +47,12 @@ export async function POST(request) {
     // Test each model sequentially
     for (const modelStr of models) {
       const startTime = Date.now();
+      let timeout: ReturnType<typeof setTimeout> | null = null;
       try {
-        // Send a minimal chat request to the internal SSE handler
-        // Use OpenAI-compatible format — universally accepted by all providers via the translator
-        const testBody = {
-          model: modelStr,
-          messages: [{ role: "user", content: "Hi" }],
-          max_tokens: 5,
-          stream: false,
-        };
-
-        const internalUrl = `${getBaseUrl(request)}/v1/chat/completions`;
+        const probe = buildComboProbeRequest(modelStr, protocol);
+        const internalUrl = `${getBaseUrl(request)}${probe.path}`;
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 20000); // 20s timeout (was 15s, slow providers need more)
+        timeout = setTimeout(() => controller.abort(), 20000); // 20s timeout (was 15s, slow providers need more)
 
         const res = await fetch(internalUrl, {
           method: "POST",
@@ -67,12 +60,16 @@ export async function POST(request) {
             "Content-Type": "application/json",
             // Fix #350: bypass REQUIRE_API_KEY for internal admin combo tests
             "X-Internal-Test": "combo-health-check",
+            "X-OmniRoute-Combo-Name": comboName,
+            "X-OmniRoute-No-Cache": "true",
+            "X-OmniRoute-No-Dedup": "true",
+            "X-OmniRoute-Live-Probe": "true",
+            "Cache-Control": "no-cache",
           },
-          body: JSON.stringify(testBody),
+          body: JSON.stringify(probe.body),
           signal: controller.signal,
         });
 
-        clearTimeout(timeout);
         const latencyMs = Date.now() - startTime;
 
         if (res.ok) {
@@ -101,14 +98,17 @@ export async function POST(request) {
         results.push({
           model: modelStr,
           status: "error",
-          error: error.name === "AbortError" ? "Timeout (15s)" : error.message,
+          error: error.name === "AbortError" ? "Timeout (20s)" : error.message,
           latencyMs,
         });
+      } finally {
+        if (timeout) clearTimeout(timeout);
       }
     }
 
     return NextResponse.json({
       comboName,
+      protocol,
       strategy: combo.strategy || "priority",
       resolvedBy,
       results,
@@ -129,4 +129,42 @@ function getBaseUrl(request) {
   if (fwdHost) return `${fwdProto}://${fwdHost}`;
   const url = new URL(request.url);
   return `${url.protocol}//${url.host}`;
+}
+
+function buildComboProbeRequest(modelStr, protocol) {
+  if (protocol === "responses") {
+    return {
+      path: "/v1/responses",
+      body: {
+        model: modelStr,
+        input: "Hi",
+        max_output_tokens: 5,
+        stream: false,
+      },
+    };
+  }
+
+  if (protocol === "claude") {
+    return {
+      path: "/v1/messages",
+      body: {
+        model: modelStr,
+        messages: [{ role: "user", content: "Hi" }],
+        max_tokens: 5,
+        stream: false,
+      },
+    };
+  }
+
+  return {
+    path: "/v1/chat/completions",
+    body: {
+      model: modelStr,
+      messages: [{ role: "user", content: "Hi" }],
+      // Prefer max_completion_tokens here so detectFormat() keeps this
+      // probe in the OpenAI family instead of falling into Claude heuristics.
+      max_completion_tokens: 5,
+      stream: false,
+    },
+  };
 }

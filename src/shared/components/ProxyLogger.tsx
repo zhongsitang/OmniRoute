@@ -14,6 +14,7 @@ import {
   formatDuration as formatLatency,
   truncateUrl,
 } from "@/shared/utils/formatting";
+import { getProviderDisplayName } from "@/lib/display/names";
 
 const STATUS_FILTERS = [
   { key: "all", label: "All" },
@@ -37,6 +38,14 @@ const COLUMNS = [
 
 const DEFAULT_VISIBLE = Object.fromEntries(COLUMNS.map((c) => [c.key, true]));
 
+function getProviderDisplayLabel(provider, providerNodes = []) {
+  if (!provider) return "-";
+  if (provider.startsWith("openai-compatible-") || provider.startsWith("anthropic-compatible-")) {
+    return getProviderDisplayName(provider, providerNodes);
+  }
+  return PROVIDER_COLORS[provider]?.label || getProviderDisplayName(provider, providerNodes);
+}
+
 export default function ProxyLogger() {
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -48,6 +57,7 @@ export default function ProxyLogger() {
   const [selectedLevel, setSelectedLevel] = useState("");
   const [sortBy, setSortBy] = useState("newest");
   const [selectedLog, setSelectedLog] = useState(null);
+  const [providerNodes, setProviderNodes] = useState([]);
   const intervalRef = useRef(null);
   const hasLoadedRef = useRef(false);
 
@@ -104,6 +114,13 @@ export default function ProxyLogger() {
     hasLoadedRef.current = true;
     fetchLogs(showLoading);
   }, [fetchLogs]);
+
+  useEffect(() => {
+    fetch("/api/provider-nodes")
+      .then((r) => (r.ok ? r.json() : { nodes: [] }))
+      .then((d) => setProviderNodes(d.nodes || []))
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (intervalRef.current) clearInterval(intervalRef.current);
@@ -213,10 +230,10 @@ export default function ProxyLogger() {
         >
           <option value="">All Providers</option>
           {uniqueProviders.map((p) => {
-            const pc = PROVIDER_COLORS[p];
+            const providerLabel = getProviderDisplayLabel(p, providerNodes);
             return (
               <option key={p} value={p}>
-                {pc?.label || p.toUpperCase()}
+                {providerLabel}
               </option>
             );
           })}
@@ -300,13 +317,18 @@ export default function ProxyLogger() {
         {uniqueProviders.length > 0 && <span className="w-px h-5 bg-border mx-1" />}
 
         {uniqueProviders.map((p) => {
-          const pc = PROVIDER_COLORS[p] || { bg: "#374151", text: "#fff", label: p.toUpperCase() };
+          const providerLabel = getProviderDisplayLabel(p, providerNodes);
+          const pc = PROVIDER_COLORS[p] || {
+            bg: "#374151",
+            text: "#fff",
+            label: providerLabel,
+          };
           const isActive = selectedProvider === p;
           return (
             <button
               key={p}
               onClick={() => setSelectedProvider(isActive ? "" : p)}
-              className={`px-3 py-1 rounded-full text-xs font-bold uppercase border transition-all ${
+              className={`px-3 py-1 rounded-full text-xs font-bold border transition-all ${
                 isActive
                   ? "border-white/40 ring-1 ring-white/20"
                   : "border-transparent opacity-70 hover:opacity-100"
@@ -316,7 +338,7 @@ export default function ProxyLogger() {
                 color: isActive ? pc.text : pc.bg,
               }}
             >
-              {pc.label}
+              {providerLabel}
             </button>
           );
         })}
@@ -427,10 +449,11 @@ export default function ProxyLogger() {
                     label: log.proxy?.type || "-",
                   };
                   const levelColor = LEVEL_COLORS[log.level] || LEVEL_COLORS.direct;
+                  const providerLabel = getProviderDisplayLabel(log.provider, providerNodes);
                   const providerColor = PROVIDER_COLORS[log.provider] || {
                     bg: "#374151",
                     text: "#fff",
-                    label: (log.provider || "-").toUpperCase(),
+                    label: providerLabel,
                   };
                   const isError = log.status === "error" || log.status === "timeout";
 
@@ -497,7 +520,7 @@ export default function ProxyLogger() {
                         <td className="px-3 py-2">
                           {log.provider ? (
                             <span
-                              className="inline-block px-2 py-0.5 rounded text-[9px] font-bold uppercase"
+                              className="inline-block px-2 py-0.5 rounded text-[9px] font-bold"
                               style={{
                                 backgroundColor: providerColor.bg,
                                 color: providerColor.text,
@@ -543,7 +566,13 @@ export default function ProxyLogger() {
       </Card>
 
       {/* Detail Panel */}
-      {selectedLog && <ProxyLogDetail log={selectedLog} onClose={() => setSelectedLog(null)} />}
+      {selectedLog && (
+        <ProxyLogDetail
+          log={selectedLog}
+          providerNodes={providerNodes}
+          onClose={() => setSelectedLog(null)}
+        />
+      )}
     </div>
   );
 }

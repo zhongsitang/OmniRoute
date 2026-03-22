@@ -6,6 +6,7 @@ const {
   parseRetryAfterFromBody,
   classifyError,
   classifyErrorText,
+  isQuotaExhaustionFailure,
   lockModel,
   isModelLocked,
   getModelLockoutInfo,
@@ -59,6 +60,19 @@ test("parseRetryAfterFromBody: classifies Anthropic rate_limit_error", () => {
   assert.equal(result.reason, RateLimitReason.RATE_LIMIT_EXCEEDED);
 });
 
+test("parseRetryAfterFromBody: classifies daily quota exhaustion from reason code", () => {
+  const body = {
+    error: {
+      code: 429,
+      reason: "DAILY_LIMIT_EXCEEDED",
+      message: "daily usage limit exceeded",
+    },
+  };
+  const result = parseRetryAfterFromBody(body);
+  assert.equal(result.retryAfterMs, null);
+  assert.equal(result.reason, RateLimitReason.QUOTA_EXHAUSTED);
+});
+
 test("parseRetryAfterFromBody: handles string input", () => {
   const body = JSON.stringify({
     error: { details: [{ retryDelay: "10s" }] },
@@ -104,6 +118,10 @@ test("classifyError: text overrides status code", () => {
 test("classifyErrorText: handles various patterns", () => {
   assert.equal(classifyErrorText("rate limit reached"), RateLimitReason.RATE_LIMIT_EXCEEDED);
   assert.equal(classifyErrorText("too many requests"), RateLimitReason.RATE_LIMIT_EXCEEDED);
+  assert.equal(
+    classifyErrorText('reason="DAILY_LIMIT_EXCEEDED" message="daily usage limit exceeded"'),
+    RateLimitReason.QUOTA_EXHAUSTED
+  );
   assert.equal(classifyErrorText("capacity exceeded"), RateLimitReason.MODEL_CAPACITY);
   assert.equal(classifyErrorText("overloaded"), RateLimitReason.MODEL_CAPACITY);
   assert.equal(classifyErrorText("unauthorized"), RateLimitReason.AUTH_ERROR);
@@ -151,6 +169,47 @@ test("checkFallbackError: backward compatible without model param", () => {
   assert.ok(result.cooldownMs > 0);
   assert.equal(result.newBackoffLevel, 1);
   assert.equal(result.reason, RateLimitReason.RATE_LIMIT_EXCEEDED);
+});
+
+test("checkFallbackError: daily quota exhaustion gets longer cooldown than generic 429", () => {
+  const generic = checkFallbackError(429, "Rate limit hit", 0);
+  const exhausted = checkFallbackError(
+    429,
+    'error: code=429 reason="DAILY_LIMIT_EXCEEDED" message="daily usage limit exceeded"',
+    0
+  );
+
+  assert.equal(exhausted.shouldFallback, true);
+  assert.equal(exhausted.newBackoffLevel, 1);
+  assert.equal(exhausted.reason, RateLimitReason.QUOTA_EXHAUSTED);
+  assert.ok(exhausted.cooldownMs > generic.cooldownMs);
+  assert.equal(exhausted.cooldownMs, 120000);
+});
+
+test("checkFallbackError: repeated daily quota exhaustion escalates with long-step backoff", () => {
+  const exhausted = checkFallbackError(
+    429,
+    'error: code=429 reason="DAILY_LIMIT_EXCEEDED" message="daily usage limit exceeded"',
+    2
+  );
+
+  assert.equal(exhausted.reason, RateLimitReason.QUOTA_EXHAUSTED);
+  assert.equal(exhausted.cooldownMs, BACKOFF_STEPS_MS[2]);
+});
+
+test("isQuotaExhaustionFailure: detects non-429 quota exhaustion signals", () => {
+  assert.equal(isQuotaExhaustionFailure(402, ""), true);
+  assert.equal(isQuotaExhaustionFailure(403, "billing hard limit reached for this account"), true);
+  assert.equal(
+    isQuotaExhaustionFailure(
+      500,
+      'error: reason=\"DAILY_LIMIT_EXCEEDED\" message=\"daily usage limit exceeded\"'
+    ),
+    true
+  );
+  assert.equal(isQuotaExhaustionFailure(403, "forbidden"), false);
+  assert.equal(isQuotaExhaustionFailure(429, "Rate limit hit"), false);
+  assert.equal(isQuotaExhaustionFailure(401, "invalid api key"), false);
 });
 
 test("checkFallbackError: 400 does not trigger fallback", () => {

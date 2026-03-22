@@ -24,6 +24,7 @@ import { getErrorCode, getRelativeTime } from "@/shared/utils";
 import { useNotificationStore } from "@/store/notificationStore";
 import ModelAvailabilityBadge from "./components/ModelAvailabilityBadge";
 import { useTranslations } from "next-intl";
+import { getProviderDisplayName } from "@/lib/display/names";
 
 // Shared helper function to avoid code duplication between ProviderCard and ApiKeyProviderCard
 function getStatusDisplay(connected, error, errorCode, t) {
@@ -234,7 +235,10 @@ export default function ProvidersPage() {
     .filter((node) => node.type === "openai-compatible")
     .map((node) => ({
       id: node.id,
-      name: node.name || t("openaiCompatibleName"),
+      name: getProviderDisplayName(node.id, node, {
+        openAICompatibleLabel: t("openaiCompatibleName"),
+        anthropicCompatibleLabel: t("anthropicCompatibleName"),
+      }),
       color: "#10A37F",
       textIcon: "OC",
       apiType: node.apiType,
@@ -244,7 +248,10 @@ export default function ProvidersPage() {
     .filter((node) => node.type === "anthropic-compatible")
     .map((node) => ({
       id: node.id,
-      name: node.name || t("anthropicCompatibleName"),
+      name: getProviderDisplayName(node.id, node, {
+        openAICompatibleLabel: t("openaiCompatibleName"),
+        anthropicCompatibleLabel: t("anthropicCompatibleName"),
+      }),
       color: "#D97757",
       textIcon: "AC",
     }));
@@ -482,7 +489,7 @@ export default function ProvidersPage() {
               </button>
             </div>
             <div className="p-5">
-              <ProviderTestResultsView results={testResults} />
+              <ProviderTestResultsView results={testResults} providerNodes={providerNodes} />
             </div>
           </div>
         </div>
@@ -1166,7 +1173,7 @@ AddAnthropicCompatibleModal.propTypes = {
 
 // ─── Provider Test Results View (mirrors combo TestResultsView) ──────────────
 
-function ProviderTestResultsView({ results }) {
+function ProviderTestResultsView({ results, providerNodes = [] }) {
   const t = useTranslations("providers");
   const tc = useTranslations("common");
 
@@ -1223,36 +1230,45 @@ function ProviderTestResultsView({ results }) {
       )}
 
       {/* Individual results */}
-      {items.map((r, i) => (
-        <div
-          key={r.connectionId || i}
-          className="flex items-center gap-2 text-xs px-3 py-2 rounded-lg bg-black/[0.03] dark:bg-white/[0.03]"
-        >
-          <span
-            className={`material-symbols-outlined text-[16px] ${
-              r.valid ? "text-emerald-500" : "text-red-500"
-            }`}
-          >
-            {r.valid ? "check_circle" : "error"}
-          </span>
-          <div className="flex-1 min-w-0">
-            <span className="font-medium">{r.connectionName}</span>
-            <span className="text-text-muted ml-1.5">({r.provider})</span>
-          </div>
-          {r.latencyMs !== undefined && (
-            <span className="text-text-muted font-mono tabular-nums">
-              {t("millisecondsAbbr", { value: r.latencyMs })}
-            </span>
-          )}
-          <span
-            className={`text-[10px] uppercase font-bold px-1.5 py-0.5 rounded ${
-              r.valid ? "bg-emerald-500/15 text-emerald-400" : "bg-red-500/15 text-red-400"
-            }`}
-          >
-            {r.valid ? t("okShort") : r.diagnosis?.type || t("errorShort")}
-          </span>
-        </div>
-      ))}
+      {items.map((r, i) =>
+        (() => {
+          const providerLabel = getProviderDisplayName(r.provider, providerNodes, {
+            openAICompatibleLabel: t("openaiCompatibleName"),
+            anthropicCompatibleLabel: t("anthropicCompatibleName"),
+          });
+
+          return (
+            <div
+              key={r.connectionId || i}
+              className="flex items-center gap-2 text-xs px-3 py-2 rounded-lg bg-black/[0.03] dark:bg-white/[0.03]"
+            >
+              <span
+                className={`material-symbols-outlined text-[16px] ${
+                  r.valid ? "text-emerald-500" : "text-red-500"
+                }`}
+              >
+                {r.valid ? "check_circle" : "error"}
+              </span>
+              <div className="flex-1 min-w-0">
+                <span className="font-medium">{r.connectionName}</span>
+                <span className="text-text-muted ml-1.5">({providerLabel})</span>
+              </div>
+              {r.latencyMs !== undefined && (
+                <span className="text-text-muted font-mono tabular-nums">
+                  {t("millisecondsAbbr", { value: r.latencyMs })}
+                </span>
+              )}
+              <span
+                className={`text-[10px] uppercase font-bold px-1.5 py-0.5 rounded ${
+                  r.valid ? "bg-emerald-500/15 text-emerald-400" : "bg-red-500/15 text-red-400"
+                }`}
+              >
+                {r.valid ? t("okShort") : r.diagnosis?.type || t("errorShort")}
+              </span>
+            </div>
+          );
+        })()
+      )}
 
       {items.length === 0 && (
         <div className="text-center py-4 text-text-muted text-sm">
@@ -1274,4 +1290,5 @@ ProviderTestResultsView.propTypes = {
     }),
     error: PropTypes.string,
   }).isRequired,
+  providerNodes: PropTypes.array,
 };

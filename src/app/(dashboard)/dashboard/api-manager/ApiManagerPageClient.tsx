@@ -4,6 +4,7 @@ import { useState, useEffect, useMemo, useCallback, memo } from "react";
 import { Card, Button, Input, Modal, CardSkeleton } from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { useTranslations } from "next-intl";
+import { getProviderDisplayName } from "@/lib/display/names";
 
 // Constants for validation
 const MAX_KEY_NAME_LENGTH = 100;
@@ -90,7 +91,7 @@ interface Model {
   owned_by: string;
 }
 
-/** Tuple type for models grouped by provider: [providerName, models[]] */
+/** Tuple type for models grouped by provider: [providerId, models[]] */
 type ProviderGroup = [provider: string, models: Model[]];
 
 export default function ApiManagerPageClient() {
@@ -327,6 +328,28 @@ export default function ApiManagerPageClient() {
 
   // Debounced search for performance
   const debouncedSearchModel = useDebouncedValue(searchModel, 150);
+  const providerLabels = useMemo(() => {
+    const labels: Record<string, string> = {};
+
+    for (const connection of allConnections) {
+      const providerId = connection.provider;
+      if (!providerId || labels[providerId]) continue;
+
+      const providerSpecificData =
+        connection.providerSpecificData && typeof connection.providerSpecificData === "object"
+          ? connection.providerSpecificData
+          : null;
+
+      labels[providerId] = getProviderDisplayName(providerId, {
+        name:
+          typeof providerSpecificData?.nodeName === "string" ? providerSpecificData.nodeName : null,
+        prefix:
+          typeof providerSpecificData?.prefix === "string" ? providerSpecificData.prefix : null,
+      });
+    }
+
+    return labels;
+  }, [allConnections]);
 
   // Group models by provider
   const modelsByProvider = useMemo((): ProviderGroup[] => {
@@ -336,8 +359,10 @@ export default function ApiManagerPageClient() {
       if (!grouped[provider]) grouped[provider] = [];
       grouped[provider].push(model);
     }
-    return Object.entries(grouped).sort((a, b) => a[0].localeCompare(b[0]));
-  }, [allModels]);
+    return Object.entries(grouped).sort((a, b) =>
+      (providerLabels[a[0]] || a[0]).localeCompare(providerLabels[b[0]] || b[0])
+    );
+  }, [allModels, providerLabels, t]);
 
   // Filter models based on debounced search
   const filteredModelsByProvider = useMemo((): ProviderGroup[] => {
@@ -349,12 +374,15 @@ export default function ApiManagerPageClient() {
         ([provider, models]): ProviderGroup => [
           provider,
           models.filter(
-            (m) => m.id.toLowerCase().includes(search) || provider.toLowerCase().includes(search)
+            (m) =>
+              m.id.toLowerCase().includes(search) ||
+              (providerLabels[provider] || provider).toLowerCase().includes(search) ||
+              provider.toLowerCase().includes(search)
           ),
         ]
       )
       .filter(([, models]) => models.length > 0);
-  }, [modelsByProvider, debouncedSearchModel]);
+  }, [modelsByProvider, debouncedSearchModel, providerLabels]);
 
   if (loading) {
     return (
@@ -745,6 +773,7 @@ export default function ApiManagerPageClient() {
           modelsByProvider={filteredModelsByProvider}
           allModels={allModels}
           allConnections={allConnections}
+          providerLabels={providerLabels}
           searchModel={searchModel}
           onSearchChange={setSearchModel}
           onSave={handleUpdatePermissions}
@@ -763,6 +792,7 @@ const PermissionsModal = memo(function PermissionsModal({
   modelsByProvider,
   allModels,
   allConnections,
+  providerLabels,
   searchModel,
   onSearchChange,
   onSave,
@@ -773,6 +803,7 @@ const PermissionsModal = memo(function PermissionsModal({
   modelsByProvider: ProviderGroup[];
   allModels: Model[];
   allConnections: ProviderConnection[];
+  providerLabels: Record<string, string>;
   searchModel: string;
   onSearchChange: (v: string) => void;
   onSave: (
@@ -1279,7 +1310,7 @@ const PermissionsModal = memo(function PermissionsModal({
                             </div>
                           </div>
                           <span className="text-xs font-semibold text-text-main truncate">
-                            {provider}
+                            {providerLabels[provider] || provider}
                           </span>
                           <span className="text-[10px] text-text-muted bg-surface px-1 py-0.5 rounded shrink-0">
                             {models.length}
@@ -1374,7 +1405,7 @@ const PermissionsModal = memo(function PermissionsModal({
                   .map(([provider, conns]) => (
                     <div key={provider}>
                       <p className="text-[10px] font-semibold text-text-muted uppercase tracking-wider px-1 py-0.5">
-                        {provider}
+                        {providerLabels[provider] || provider}
                       </p>
                       {conns.map((conn) => {
                         const isSelected = selectedConnections.includes(conn.id);

@@ -51,6 +51,20 @@ describe("Semantic Cache", () => {
       const sig = generateSignature("gpt-4", [], 0, 1);
       assert.ok(sig.length > 0);
     });
+
+    it("distinguishes Responses API input payloads", () => {
+      const sig1 = generateSignature("gpt-4", {
+        input: "alpha",
+        max_output_tokens: 16,
+        stream: false,
+      });
+      const sig2 = generateSignature("gpt-4", {
+        input: "beta",
+        max_output_tokens: 16,
+        stream: false,
+      });
+      assert.notEqual(sig1, sig2);
+    });
   });
 
   describe("isCacheable", () => {
@@ -76,6 +90,16 @@ describe("Semantic Cache", () => {
 
     it("returns false when no-cache header is set", () => {
       const headers = new Headers({ "x-omniroute-no-cache": "true" });
+      assert.equal(isCacheable({ stream: false, temperature: 0 }, headers), false);
+    });
+
+    it("returns false when no-cache header is provided as a plain object", () => {
+      const headers = { "x-omniroute-no-cache": "true" };
+      assert.equal(isCacheable({ stream: false, temperature: 0 }, headers), false);
+    });
+
+    it("returns false for live probe requests", () => {
+      const headers = { "x-omniroute-live-probe": "true" };
       assert.equal(isCacheable({ stream: false, temperature: 0 }, headers), false);
     });
 

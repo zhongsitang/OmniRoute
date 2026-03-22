@@ -8,12 +8,21 @@ import {
   getProxyStatusStyle as getStatusStyle,
 } from "@/shared/constants/colors";
 import { formatDuration as formatLatency } from "@/shared/utils/formatting";
+import { getProviderDisplayName } from "@/lib/display/names";
 
 /**
  * Proxy log detail modal — shows full proxy event metadata, error info, and config.
  * Extracted from ProxyLogger.js for maintainability.
  */
-export default function ProxyLogDetail({ log, onClose }) {
+function getProviderDisplayLabel(provider, providerNodes = []) {
+  if (!provider) return "-";
+  if (provider.startsWith("openai-compatible-") || provider.startsWith("anthropic-compatible-")) {
+    return getProviderDisplayName(provider, providerNodes);
+  }
+  return PROVIDER_COLORS[provider]?.label || getProviderDisplayName(provider, providerNodes);
+}
+
+export default function ProxyLogDetail({ log, onClose, providerNodes = [] }) {
   useEffect(() => {
     const handler = (e) => {
       if (e.key === "Escape") onClose();
@@ -29,10 +38,11 @@ export default function ProxyLogDetail({ log, onClose }) {
     label: log.proxy?.type || "-",
   };
   const levelColor = LEVEL_COLORS[log.level] || LEVEL_COLORS.direct;
+  const providerLabel = getProviderDisplayLabel(log.provider, providerNodes);
   const providerColor = PROVIDER_COLORS[log.provider] || {
     bg: "#374151",
     text: "#fff",
-    label: (log.provider || "-").toUpperCase(),
+    label: providerLabel,
   };
 
   const formatDate = (iso) => {
@@ -130,7 +140,7 @@ export default function ProxyLogDetail({ log, onClose }) {
               </div>
               {log.provider ? (
                 <span
-                  className="inline-block px-2.5 py-1 rounded text-[10px] font-bold uppercase"
+                  className="inline-block px-2.5 py-1 rounded text-[10px] font-bold"
                   style={{ backgroundColor: providerColor.bg, color: providerColor.text }}
                 >
                   {providerColor.label}

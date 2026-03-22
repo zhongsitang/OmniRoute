@@ -39,6 +39,7 @@ const TIER_FILTERS = [
 type TierFilterKey = (typeof TIER_FILTERS)[number]["key"];
 type TierMeta = ReturnType<typeof normalizePlanTier>;
 type FetchQuotaOptions = { force?: boolean };
+type UsageConnection = ProviderConnectionSummary;
 
 export default function ProviderLimits() {
   const t = useTranslations("usage");
@@ -74,6 +75,13 @@ export default function ProviderLimits() {
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastFetchTimeRef = useRef<Record<string, number>>({});
+
+  const isUsageConnection = useCallback(
+    (conn: ProviderConnectionSummary) =>
+      supportsProviderUsageMonitoring(conn.provider) &&
+      (conn.authType === "oauth" || conn.authType === "apikey"),
+    []
+  );
 
   const fetchConnections = useCallback(async (): Promise<ProviderConnectionSummary[]> => {
     try {
@@ -154,37 +162,83 @@ export default function ProviderLimits() {
     [fetchQuota]
   );
 
+  const markConnectionsLoading = useCallback((targetConnections: UsageConnection[]) => {
+    if (targetConnections.length === 0) return;
+
+    setLoading((prev) => {
+      const next = { ...prev };
+      for (const connection of targetConnections) {
+        next[connection.id] = true;
+      }
+      return next;
+    });
+
+    setErrors((prev) => {
+      const next = { ...prev };
+      for (const connection of targetConnections) {
+        next[connection.id] = null;
+      }
+      return next;
+    });
+  }, []);
+
+  const refreshConnections = useCallback(
+    async (targetConnections: UsageConnection[]) => {
+      if (targetConnections.length === 0) return;
+
+      markConnectionsLoading(targetConnections);
+      await Promise.allSettled(
+        targetConnections.map((conn) => fetchQuota(conn.id, conn.provider, { force: true }))
+      );
+    },
+    [fetchQuota, markConnectionsLoading]
+  );
+
   const refreshAll = useCallback(async () => {
     if (refreshingAll) return;
 
     setRefreshingAll(true);
     setCountdown(120);
     try {
+      markConnectionsLoading(connections.filter(isUsageConnection));
       const conns = await fetchConnections();
-      const usageConnections = conns.filter(
-        (conn) =>
-          supportsProviderUsageMonitoring(conn.provider) &&
-          (conn.authType === "oauth" || conn.authType === "apikey")
-      );
-      await Promise.all(
-        usageConnections.map((conn) => fetchQuota(conn.id, conn.provider, { force: true }))
-      );
+      const usageConnections = conns.filter(isUsageConnection);
+      await refreshConnections(usageConnections);
     } catch (error) {
       console.error("Error refreshing all:", error);
     } finally {
       setRefreshingAll(false);
     }
-  }, [refreshingAll, fetchConnections, fetchQuota]);
+  }, [
+    refreshingAll,
+    connections,
+    fetchConnections,
+    isUsageConnection,
+    markConnectionsLoading,
+    refreshConnections,
+  ]);
 
   useEffect(() => {
+    let isActive = true;
+
     const init = async () => {
       setInitialLoading(true);
-      await refreshAll();
+      const conns = await fetchConnections();
+      if (!isActive) return;
+
+      const usageConnections = conns.filter(isUsageConnection);
+      markConnectionsLoading(usageConnections);
       setInitialLoading(false);
+
+      void refreshConnections(usageConnections);
     };
 
-    init();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    void init();
+
+    return () => {
+      isActive = false;
+    };
+  }, [fetchConnections, isUsageConnection, markConnectionsLoading, refreshConnections]);
 
   useEffect(() => {
     if (!autoRefresh) {
@@ -225,13 +279,8 @@ export default function ProviderLimits() {
   }, [autoRefresh, refreshAll]);
 
   const filteredConnections = useMemo(
-    () =>
-      connections.filter(
-        (conn) =>
-          supportsProviderUsageMonitoring(conn.provider) &&
-          (conn.authType === "oauth" || conn.authType === "apikey")
-      ),
-    [connections]
+    () => connections.filter(isUsageConnection),
+    [connections, isUsageConnection]
   );
 
   const sortedConnections = useMemo(() => {

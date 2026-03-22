@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { Card } from "@/shared/components";
 import { useTranslations } from "next-intl";
+import { findProviderNode, getProviderDisplayName } from "@/lib/display/names";
 
 const PRICING_FIELDS = ["input", "output", "cached", "reasoning", "cache_creation"] as const;
 const FIELD_LABEL_KEYS: Record<(typeof PRICING_FIELDS)[number], string> = {
@@ -16,6 +17,7 @@ const FIELD_LABEL_KEYS: Record<(typeof PRICING_FIELDS)[number], string> = {
 export default function PricingTab() {
   const [catalog, setCatalog] = useState({});
   const [pricingData, setPricingData] = useState({});
+  const [providerNodes, setProviderNodes] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState("");
@@ -33,12 +35,17 @@ export default function PricingTab() {
   const loadData = async () => {
     setLoading(true);
     try {
-      const [catalogRes, pricingRes] = await Promise.all([
+      const [catalogRes, pricingRes, nodesRes] = await Promise.all([
         fetch("/api/pricing/models"),
         fetch("/api/pricing"),
+        fetch("/api/provider-nodes"),
       ]);
       if (catalogRes.ok) setCatalog(await catalogRes.json());
       if (pricingRes.ok) setPricingData(await pricingRes.json());
+      if (nodesRes.ok) {
+        const nodesData = await nodesRes.json();
+        setProviderNodes(nodesData.nodes || []);
+      }
     } catch (error) {
       console.error("Failed to load pricing data:", error);
     } finally {
@@ -52,11 +59,17 @@ export default function PricingTab() {
       .map(([alias, info]: [string, any]) => ({
         alias,
         ...info,
+        providerNode: findProviderNode(info.id || alias, providerNodes),
         pricedModels: pricingData[alias] ? Object.keys(pricingData[alias]).length : 0,
+      }))
+      .map((provider: any) => ({
+        ...provider,
+        displayName: getProviderDisplayName(provider.id || provider.alias, provider.providerNode),
+        displayAlias: provider.providerNode?.prefix || provider.alias,
       }))
       .sort((a, b) => b.modelCount - a.modelCount);
     return providers;
-  }, [catalog, pricingData]);
+  }, [catalog, pricingData, providerNodes]);
 
   // Filter providers by search
   const filteredProviders = useMemo(() => {
@@ -64,11 +77,19 @@ export default function PricingTab() {
     const q = searchQuery.toLowerCase();
     return allProviders.filter(
       (p) =>
+        (p.displayName || "").toLowerCase().includes(q) ||
+        (p.displayAlias || "").toLowerCase().includes(q) ||
         p.alias.toLowerCase().includes(q) ||
         p.id.toLowerCase().includes(q) ||
         p.models.some((m) => m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q))
     );
   }, [allProviders, searchQuery]);
+
+  const providerLabelMap = useMemo(() => {
+    return Object.fromEntries(
+      allProviders.map((provider: any) => [provider.alias, provider.displayName || provider.alias])
+    );
+  }, [allProviders]);
 
   // Stats
   const stats = useMemo(() => {
@@ -114,6 +135,7 @@ export default function PricingTab() {
       setSaveStatus("");
       try {
         const providerPricing = pricingData[providerAlias] || {};
+        const providerLabel = providerLabelMap[providerAlias] || providerAlias;
         const response = await fetch("/api/pricing", {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
@@ -121,7 +143,7 @@ export default function PricingTab() {
         });
 
         if (response.ok) {
-          setSaveStatus(`✅ ${providerAlias.toUpperCase()} ${t("saved")}`);
+          setSaveStatus(`✅ ${providerLabel} ${t("saved")}`);
           setEditedProviders((prev) => {
             const next = new Set(prev);
             next.delete(providerAlias);
@@ -138,12 +160,13 @@ export default function PricingTab() {
         setSaving(false);
       }
     },
-    [pricingData, t]
+    [pricingData, providerLabelMap, t]
   );
 
   const resetProvider = useCallback(
     async (providerAlias) => {
-      if (!confirm(t("resetPricingConfirm", { provider: providerAlias.toUpperCase() }))) return;
+      const providerLabel = providerLabelMap[providerAlias] || providerAlias;
+      if (!confirm(t("resetPricingConfirm", { provider: providerLabel }))) return;
       try {
         const response = await fetch(`/api/pricing?provider=${providerAlias}`, {
           method: "DELETE",
@@ -151,7 +174,7 @@ export default function PricingTab() {
         if (response.ok) {
           const updated = await response.json();
           setPricingData(updated);
-          setSaveStatus(`🔄 ${providerAlias.toUpperCase()} ${t("resetDefaults")}`);
+          setSaveStatus(`🔄 ${providerLabel} ${t("resetDefaults")}`);
           setEditedProviders((prev) => {
             const next = new Set(prev);
             next.delete(providerAlias);
@@ -163,7 +186,7 @@ export default function PricingTab() {
         setSaveStatus(`❌ ${t("resetFailed")}: ${error.message}`);
       }
     },
-    [t]
+    [providerLabelMap, t]
   );
 
   const selectProviderFilter = useCallback((alias) => {
@@ -237,7 +260,7 @@ export default function PricingTab() {
             className="px-3 py-2 text-xs bg-primary/10 text-primary border border-primary/20 rounded-lg hover:bg-primary/20 transition-colors flex items-center gap-1"
           >
             <span className="material-symbols-outlined text-sm">close</span>
-            {selectedProvider.toUpperCase()} — {t("showAll")}
+            {providerLabelMap[selectedProvider] || selectedProvider} - {t("showAll")}
           </button>
         )}
       </div>
@@ -256,7 +279,7 @@ export default function PricingTab() {
                   : "bg-bg-subtle text-text-muted hover:bg-bg-hover border border-transparent"
             }`}
           >
-            {p.alias.toUpperCase()} <span className="opacity-60">({p.modelCount})</span>
+            {p.displayName || p.alias} <span className="opacity-60">({p.modelCount})</span>
           </button>
         ))}
       </div>
@@ -346,10 +369,13 @@ function ProviderSection({
             chevron_right
           </span>
           <div>
-            <span className="font-semibold text-sm">
-              {provider.id.charAt(0).toUpperCase() + provider.id.slice(1)}
-            </span>
-            <span className="text-text-muted text-xs ml-2">({provider.alias.toUpperCase()})</span>
+            <span className="font-semibold text-sm">{provider.displayName || provider.name}</span>
+            {(provider.displayAlias || provider.alias) !==
+              (provider.displayName || provider.name) && (
+              <span className="text-text-muted text-xs ml-2">
+                ({provider.displayAlias || provider.alias})
+              </span>
+            )}
           </div>
           <span className="px-1.5 py-0.5 bg-bg-subtle text-text-muted text-[10px] rounded uppercase font-semibold">
             {authBadge}

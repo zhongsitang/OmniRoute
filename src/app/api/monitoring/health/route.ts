@@ -1,6 +1,30 @@
 import { NextResponse } from "next/server";
-import { getSettings } from "@/lib/localDb";
+import { getProviderConnections, getProviderNodes, getSettings } from "@/lib/localDb";
 import { APP_CONFIG } from "@/shared/constants/config";
+
+type JsonRecord = Record<string, unknown>;
+
+function isRecord(value: unknown): value is JsonRecord {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function toNonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function isConfiguredBreakerName(
+  breakerName: string,
+  configuredProviders: Set<string>,
+  configuredModelProviders: Set<string>
+): boolean {
+  if (breakerName.startsWith("combo:")) {
+    const modelName = breakerName.slice("combo:".length);
+    const providerId = toNonEmptyString(modelName.split("/")[0]);
+    return Boolean(providerId && configuredModelProviders.has(providerId));
+  }
+
+  return configuredProviders.has(breakerName);
+}
 
 /**
  * GET /api/monitoring/health — System health overview
@@ -15,11 +39,26 @@ export async function GET() {
     const { getAllModelLockouts } = await import("@omniroute/open-sse/services/accountFallback");
     const { getInflightCount } = await import("@omniroute/open-sse/services/requestDedup.ts");
 
-    const settings = await getSettings();
+    const [settings, connections, providerNodes] = await Promise.all([
+      getSettings(),
+      getProviderConnections(),
+      getProviderNodes(),
+    ]);
     const circuitBreakers = getAllCircuitBreakerStatuses();
     const rateLimitStatus = getAllRateLimitStatus();
     const lockouts = getAllModelLockouts();
     const { getAllHealthStatuses } = await import("@/lib/localHealthCheck");
+    const configuredProviders = new Set(
+      connections
+        .map((connection) => (isRecord(connection) ? toNonEmptyString(connection.provider) : null))
+        .filter((provider): provider is string => Boolean(provider))
+    );
+    const configuredModelProviders = new Set([
+      ...configuredProviders,
+      ...providerNodes
+        .map((node) => (isRecord(node) ? toNonEmptyString(node.prefix) : null))
+        .filter((prefix): prefix is string => Boolean(prefix)),
+    ]);
 
     // System info
     const system = {
@@ -36,6 +75,9 @@ export async function GET() {
     for (const cb of circuitBreakers) {
       // Skip test circuit breakers (leftover from unit tests)
       if (cb.name.startsWith("test-") || cb.name.startsWith("test_")) continue;
+      if (!isConfiguredBreakerName(cb.name, configuredProviders, configuredModelProviders)) {
+        continue;
+      }
       providerHealth[cb.name] = {
         state: cb.state,
         failures: cb.failureCount || 0,

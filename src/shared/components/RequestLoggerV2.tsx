@@ -16,6 +16,7 @@ import {
   maskAccount,
   formatApiKeyLabel,
 } from "@/shared/utils/formatting";
+import { getProviderDisplayName } from "@/lib/display/names";
 
 // Quick filter categories - status-based only (providers are dynamic from data)
 const STATUS_FILTERS = [
@@ -43,33 +44,12 @@ const DEFAULT_VISIBLE = Object.fromEntries(COLUMNS.map((c) => [c.key, true]));
 
 /**
  * Get a friendly display label for compatible providers.
- * Converts long IDs like "openai-compatible-chat-02669115-2545-4896-b003-cb4dac09d441"
- * to readable labels. If providerNodes are available, uses user-defined name;
- * otherwise falls back to "OAI-Compat".
+ * Converts compatible provider IDs to user-facing names.
  */
 function getProviderDisplayLabel(provider: string, providerNodes?: any[]): string {
   if (!provider) return "-";
   if (provider.startsWith("openai-compatible-") || provider.startsWith("anthropic-compatible-")) {
-    // Try to find user-defined name from provider nodes
-    if (providerNodes?.length) {
-      const matchedNode = providerNodes.find(
-        (node) => node.id === provider || node.prefix === provider
-      );
-      if (matchedNode?.name) return matchedNode.name;
-    }
-    // Fallback to generic labels
-    if (provider.startsWith("openai-compatible-")) {
-      const suffix = provider.replace("openai-compatible-", "");
-      const parts = suffix.split("-");
-      if (parts.length > 1 && parts[1]?.length >= 8) return `OAI-COMPAT`;
-      return `OAI: ${suffix.slice(0, 16).toUpperCase()}`;
-    }
-    if (provider.startsWith("anthropic-compatible-")) {
-      const suffix = provider.replace("anthropic-compatible-", "");
-      const parts = suffix.split("-");
-      if (parts.length > 1 && parts[1]?.length >= 8) return `ANT-COMPAT`;
-      return `ANT: ${suffix.slice(0, 16).toUpperCase()}`;
-    }
+    return getProviderDisplayName(provider, providerNodes);
   }
   return null; // Not a compatible provider, use default PROVIDER_COLORS
 }
@@ -444,7 +424,7 @@ export default function RequestLoggerV2() {
             <button
               key={p}
               onClick={() => setSelectedProvider(isActive ? "" : p)}
-              className={`px-3 py-1 rounded-full text-xs font-bold uppercase border transition-all ${
+              className={`px-3 py-1 rounded-full text-xs font-bold border transition-all ${
                 isActive
                   ? "border-white/40 ring-1 ring-white/20"
                   : "border-transparent opacity-70 hover:opacity-100"
@@ -599,7 +579,7 @@ export default function RequestLoggerV2() {
                       {visibleColumns.provider && (
                         <td className="px-3 py-2">
                           <span
-                            className="inline-block px-2 py-0.5 rounded text-[9px] font-bold uppercase"
+                            className="inline-block px-2 py-0.5 rounded text-[9px] font-bold"
                             style={{ backgroundColor: providerColor.bg, color: providerColor.text }}
                           >
                             {providerLabel}
@@ -686,6 +666,7 @@ export default function RequestLoggerV2() {
           log={selectedLog}
           detail={detailData}
           loading={detailLoading}
+          providerNodes={providerNodes}
           onClose={closeDetail}
           onCopy={copyToClipboard}
         />

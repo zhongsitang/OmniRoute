@@ -30,24 +30,47 @@ export interface DedupResult<T> {
 
 const inflight = new Map<string, Promise<unknown>>();
 
+function normalizeValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((entry) => normalizeValue(entry));
+  if (!value || typeof value !== "object") return value ?? null;
+
+  return Object.keys(value as Record<string, unknown>)
+    .sort()
+    .reduce<Record<string, unknown>>((acc, key) => {
+      acc[key] = normalizeValue((value as Record<string, unknown>)[key]);
+      return acc;
+    }, {});
+}
+
 /**
  * Compute a deterministic hash for a request body.
- * Includes: model, messages, temperature, tools, tool_choice, max_tokens, response_format
- * Excludes: stream, user, metadata (don't affect LLM output)
+ * Includes user-visible prompt fields across chat/responses/gemini-style payloads.
+ * Excludes transport-only fields such as stream/user/metadata.
  */
 export function computeRequestHash(requestBody: unknown): string {
   const body = requestBody as Record<string, unknown>;
   const canonical = {
     model: body.model ?? null,
-    messages: body.messages ?? null,
+    messages: normalizeValue(body.messages ?? null),
+    input: normalizeValue(body.input ?? null),
+    instructions: normalizeValue(body.instructions ?? null),
+    contents: normalizeValue(body.contents ?? null),
+    prompt: normalizeValue(body.prompt ?? null),
     temperature: typeof body.temperature === "number" ? body.temperature : 1.0,
-    tools: body.tools ?? null,
-    tool_choice: body.tool_choice ?? null,
-    max_tokens: body.max_tokens ?? null,
-    response_format: body.response_format ?? null,
-    top_p: body.top_p ?? null,
-    frequency_penalty: body.frequency_penalty ?? null,
-    presence_penalty: body.presence_penalty ?? null,
+    tools: normalizeValue(body.tools ?? null),
+    tool_choice: normalizeValue(body.tool_choice ?? null),
+    max_tokens: normalizeValue(body.max_tokens ?? null),
+    max_completion_tokens: normalizeValue(body.max_completion_tokens ?? null),
+    max_output_tokens: normalizeValue(body.max_output_tokens ?? null),
+    response_format: normalizeValue(body.response_format ?? null),
+    top_p: normalizeValue(body.top_p ?? null),
+    frequency_penalty: normalizeValue(body.frequency_penalty ?? null),
+    presence_penalty: normalizeValue(body.presence_penalty ?? null),
+    reasoning: normalizeValue(body.reasoning ?? null),
+    reasoning_effort: normalizeValue(body.reasoning_effort ?? null),
+    text: normalizeValue(body.text ?? null),
+    modalities: normalizeValue(body.modalities ?? null),
+    audio: normalizeValue(body.audio ?? null),
   };
   return createHash("sha256").update(JSON.stringify(canonical)).digest("hex").slice(0, 16);
 }

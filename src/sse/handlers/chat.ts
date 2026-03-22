@@ -36,7 +36,11 @@ import {
   setModelUnavailable,
   clearModelUnavailability,
 } from "../../domain/modelAvailability";
-import { markAccountExhaustedFrom429 } from "../../domain/quotaCache";
+import {
+  markAccountExhaustedFrom429,
+  setQuotaCacheFromUsage,
+  getQuotaResetAt,
+} from "../../domain/quotaCache";
 import { RequestTelemetry, recordTelemetry } from "../../shared/utils/requestTelemetry";
 import { generateRequestId } from "../../shared/utils/requestId";
 import { recordCost } from "../../domain/costRules";
@@ -50,6 +54,11 @@ import {
   isFallbackDecision,
   shouldUseFallback,
 } from "@omniroute/open-sse/services/emergencyFallback.ts";
+import { getUsageForProvider } from "@omniroute/open-sse/services/usage.ts";
+import {
+  checkFallbackError,
+  isQuotaExhaustionFailure,
+} from "@omniroute/open-sse/services/accountFallback.ts";
 
 /**
  * Handle chat completion request
@@ -137,6 +146,10 @@ export async function handleChat(request: any, clientRawRequest: any = null) {
 
   // Optional strict API key mode for /v1 endpoints (require key on every request).
   const isInternalTest = request.headers?.get?.("x-internal-test") === "combo-health-check";
+  const isLiveProbe = request.headers?.get?.("x-omniroute-live-probe") === "true";
+  const comboProbeName = isInternalTest
+    ? request.headers?.get?.("x-omniroute-combo-name") || null
+    : null;
   if (process.env.REQUIRE_API_KEY === "true" && !isInternalTest) {
     if (!apiKey) {
       log.warn("AUTH", "Missing API key while REQUIRE_API_KEY=true");
@@ -207,6 +220,8 @@ export async function handleChat(request: any, clientRawRequest: any = null) {
     // Pre-check function: skip models where all accounts are in cooldown
     // Uses modelAvailability module for TTL-based cooldowns
     const checkModelAvailable = async (modelString: string) => {
+      if (isLiveProbe) return true;
+
       // Use getModelInfo to properly resolve custom prefixes
       const modelInfo = await getModelInfo(modelString);
       const provider = modelInfo.provider;
@@ -221,7 +236,8 @@ export async function handleChat(request: any, clientRawRequest: any = null) {
       const creds = await getProviderCredentials(
         provider,
         null,
-        apiKeyInfo?.allowedConnections ?? null
+        apiKeyInfo?.allowedConnections ?? null,
+        { liveProbe: isLiveProbe }
       );
       if (!creds || creds.allRateLimited) return false;
       return true;
@@ -238,7 +254,9 @@ export async function handleChat(request: any, clientRawRequest: any = null) {
       body,
       combo,
       handleSingleModel: (b: any, m: string) =>
-        handleSingleModelChat(b, m, clientRawRequest, request, combo.name, apiKeyInfo, telemetry),
+        handleSingleModelChat(b, m, clientRawRequest, request, combo.name, apiKeyInfo, telemetry, {
+          liveProbe: isLiveProbe,
+        }),
       isModelAvailable: checkModelAvailable,
       log,
       settings,
@@ -257,9 +275,10 @@ export async function handleChat(request: any, clientRawRequest: any = null) {
     modelStr,
     clientRawRequest,
     request,
-    null,
+    comboProbeName,
     apiKeyInfo,
-    telemetry
+    telemetry,
+    { liveProbe: isLiveProbe }
   );
   recordTelemetry(telemetry);
   return response;
@@ -280,7 +299,7 @@ async function handleSingleModelChat(
   comboName: string | null = null,
   apiKeyInfo: any = null,
   telemetry: any = null,
-  runtimeOptions: { emergencyFallbackTried?: boolean } = {}
+  runtimeOptions: { emergencyFallbackTried?: boolean; liveProbe?: boolean } = {}
 ) {
   // 1. Resolve model → provider/model
   const resolved = await resolveModelOrError(modelStr, body);
@@ -289,7 +308,7 @@ async function handleSingleModelChat(
   const { provider, model, sourceFormat, targetFormat, extendedContext } = resolved;
 
   // 2. Pipeline gates (availability + circuit breaker)
-  const gate = checkPipelineGates(provider, model);
+  const gate = runtimeOptions.liveProbe ? null : checkPipelineGates(provider, model);
   if (gate) return gate;
 
   const breaker = getCircuitBreaker(provider, {
@@ -310,11 +329,12 @@ async function handleSingleModelChat(
     const credentials = await getProviderCredentials(
       provider,
       excludeConnectionId,
-      apiKeyInfo?.allowedConnections ?? null
+      apiKeyInfo?.allowedConnections ?? null,
+      { liveProbe: runtimeOptions.liveProbe }
     );
 
     if (!credentials || credentials.allRateLimited) {
-      if (lastStatus === 429 || lastStatus === 503) {
+      if (!runtimeOptions.liveProbe && (lastStatus === 429 || lastStatus === 503)) {
         setModelUnavailable(provider, model, 60000, `HTTP ${lastStatus}`);
         log.info(
           "AVAILABILITY",
@@ -354,6 +374,7 @@ async function handleSingleModelChat(
       userAgent,
       comboName,
       extendedContext,
+      skipBreaker: runtimeOptions.liveProbe,
     });
     if (telemetry) telemetry.endPhase();
 
@@ -429,9 +450,38 @@ async function handleSingleModelChat(
       }
     }
 
-    // 6. Mark account as quota-exhausted on 429 response
-    if (result.status === 429) {
-      markAccountExhaustedFrom429(credentials.connectionId, provider);
+    if (runtimeOptions.liveProbe) {
+      const probeFallback = checkFallbackError(
+        Number(result.status || 0),
+        result.error || "",
+        credentials.backoffLevel || 0,
+        model,
+        provider
+      );
+
+      if (probeFallback.shouldFallback) {
+        log.warn(
+          "LIVE_PROBE",
+          `Probe fallback for ${provider}:${accountId}... (${result.status}), trying next account without mutating provider state`
+        );
+        excludeConnectionId = credentials.connectionId;
+        lastError = result.error;
+        lastStatus = result.status;
+        continue;
+      }
+
+      return result.response;
+    }
+
+    // 6. Sync quota state for generic 429s and any provider-specific quota-exhausted failure.
+    if (result.status === 429 || isQuotaExhaustionFailure(result.status, result.error)) {
+      await syncQuotaStateFromFailure(
+        result.status,
+        provider,
+        credentials,
+        refreshedCredentials,
+        result.error
+      );
     }
 
     // 7. Fallback to next account
@@ -551,6 +601,7 @@ async function executeChatWithBreaker({
   userAgent,
   comboName,
   extendedContext,
+  skipBreaker = false,
 }: any): Promise<{ result: any; tlsFingerprintUsed: boolean }> {
   let tlsFingerprintUsed = false;
 
@@ -580,6 +631,16 @@ async function executeChatWithBreaker({
           },
         })
       );
+
+    if (skipBreaker) {
+      if (!proxyInfo?.proxy && isTlsFingerprintActive()) {
+        const tracked = await runWithTlsTracking(chatFn);
+        return { result: tracked.result, tlsFingerprintUsed: tracked.tlsFingerprintUsed };
+      }
+
+      const result = await chatFn();
+      return { result, tlsFingerprintUsed: false };
+    }
 
     if (!proxyInfo?.proxy && isTlsFingerprintActive()) {
       const tracked = await breaker.execute(async () => runWithTlsTracking(chatFn));
@@ -660,6 +721,43 @@ async function safeResolveProxy(connectionId: string) {
     log.debug("PROXY", `Failed to resolve proxy: ${proxyErr.message}`);
     return null;
   }
+}
+
+async function syncQuotaStateFromFailure(
+  status: number,
+  provider: string,
+  credentials: any,
+  refreshedCredentials: any,
+  errorText: string | null
+) {
+  const quotaFailure = isQuotaExhaustionFailure(status, errorText);
+  if (!quotaFailure) {
+    markAccountExhaustedFrom429(credentials.connectionId, provider);
+    return;
+  }
+
+  try {
+    const proxyInfo = await safeResolveProxy(credentials.connectionId);
+    const usageConnection = {
+      provider,
+      apiKey: credentials.apiKey || null,
+      accessToken: refreshedCredentials?.accessToken || credentials.accessToken || null,
+      providerSpecificData:
+        refreshedCredentials?.providerSpecificData || credentials.providerSpecificData || {},
+    };
+    const usage = await runWithProxyContext(proxyInfo?.proxy || null, () =>
+      getUsageForProvider(usageConnection)
+    );
+    setQuotaCacheFromUsage(credentials.connectionId, provider, usage);
+  } catch (usageErr: any) {
+    log.debug(
+      "QUOTA",
+      `Failed to sync quota usage after quota failure for ${provider}:${credentials.connectionId.slice(0, 8)} — ${usageErr.message}`
+    );
+  }
+
+  const preciseResetAt = getQuotaResetAt(credentials.connectionId);
+  markAccountExhaustedFrom429(credentials.connectionId, provider, preciseResetAt);
 }
 
 function safeLogEvents({

@@ -5,8 +5,14 @@ import PropTypes from "prop-types";
 import Link from "next/link";
 import { Card, Button, Input, Modal, CardSkeleton, SegmentedControl } from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
-import { AI_PROVIDERS, getProviderByAlias } from "@/shared/constants/providers";
+import {
+  AI_PROVIDERS,
+  getProviderByAlias,
+  isAnthropicCompatibleProvider,
+  isOpenAICompatibleProvider,
+} from "@/shared/constants/providers";
 import { useTranslations } from "next-intl";
+import { getProviderDisplayName } from "@/lib/display/names";
 
 const CLOUD_URL = process.env.NEXT_PUBLIC_CLOUD_URL || null;
 const CLOUD_ACTION_TIMEOUT_MS = 15000;
@@ -34,6 +40,7 @@ export default function APIPageClient({ machineId }) {
   const [mcpStatus, setMcpStatus] = useState<any>(null);
   const [a2aStatus, setA2aStatus] = useState<any>(null);
   const [searchProviders, setSearchProviders] = useState<any[]>([]);
+  const [providerNodes, setProviderNodes] = useState<any[]>([]);
 
   const { copied, copy } = useCopyToClipboard();
 
@@ -49,12 +56,25 @@ export default function APIPageClient({ machineId }) {
     }
   };
 
+  const fetchProviderNodes = async () => {
+    try {
+      const res = await fetch("/api/provider-nodes");
+      if (res.ok) {
+        const data = await res.json();
+        setProviderNodes(data.nodes || []);
+      }
+    } catch {
+      // Ignore provider node failures; display falls back to generic labels.
+    }
+  };
+
   useEffect(() => {
     Promise.allSettled([
       loadCloudSettings(),
       fetchModels(),
       fetchProtocolStatus(),
       fetchSearchProviders(),
+      fetchProviderNodes(),
     ]).finally(() => {
       setLoading(false);
     });
@@ -442,6 +462,7 @@ export default function APIPageClient({ machineId }) {
                 copy={copy}
                 copied={copied}
                 baseUrl={currentEndpoint}
+                providerNodes={providerNodes}
               />
 
               {/* Responses API */}
@@ -463,6 +484,7 @@ export default function APIPageClient({ machineId }) {
                 copy={copy}
                 copied={copied}
                 baseUrl={currentEndpoint}
+                providerNodes={providerNodes}
               />
 
               {/* Legacy Completions */}
@@ -484,6 +506,7 @@ export default function APIPageClient({ machineId }) {
                 copy={copy}
                 copied={copied}
                 baseUrl={currentEndpoint}
+                providerNodes={providerNodes}
               />
             </div>
           </div>
@@ -514,6 +537,7 @@ export default function APIPageClient({ machineId }) {
                 copy={copy}
                 copied={copied}
                 baseUrl={currentEndpoint}
+                providerNodes={providerNodes}
               />
 
               {/* Image Generation */}
@@ -532,6 +556,7 @@ export default function APIPageClient({ machineId }) {
                 copy={copy}
                 copied={copied}
                 baseUrl={currentEndpoint}
+                providerNodes={providerNodes}
               />
 
               {/* Audio Transcription */}
@@ -552,6 +577,7 @@ export default function APIPageClient({ machineId }) {
                 copy={copy}
                 copied={copied}
                 baseUrl={currentEndpoint}
+                providerNodes={providerNodes}
               />
 
               {/* Audio Speech (TTS) */}
@@ -570,6 +596,7 @@ export default function APIPageClient({ machineId }) {
                 copy={copy}
                 copied={copied}
                 baseUrl={currentEndpoint}
+                providerNodes={providerNodes}
               />
 
               {/* Music Generation */}
@@ -589,6 +616,7 @@ export default function APIPageClient({ machineId }) {
                 copy={copy}
                 copied={copied}
                 baseUrl={currentEndpoint}
+                providerNodes={providerNodes}
               />
             </div>
           </div>
@@ -629,6 +657,7 @@ export default function APIPageClient({ machineId }) {
                   copy={copy}
                   copied={copied}
                   baseUrl={currentEndpoint}
+                  providerNodes={providerNodes}
                 />
               </div>
             </div>
@@ -660,6 +689,7 @@ export default function APIPageClient({ machineId }) {
                 copy={copy}
                 copied={copied}
                 baseUrl={currentEndpoint}
+                providerNodes={providerNodes}
               />
 
               {/* Moderations */}
@@ -678,6 +708,7 @@ export default function APIPageClient({ machineId }) {
                 copy={copy}
                 copied={copied}
                 baseUrl={currentEndpoint}
+                providerNodes={providerNodes}
               />
 
               {/* List Models */}
@@ -698,6 +729,7 @@ export default function APIPageClient({ machineId }) {
                 copy={copy}
                 copied={copied}
                 baseUrl={currentEndpoint}
+                providerNodes={providerNodes}
               />
             </div>
           </div>
@@ -1131,6 +1163,7 @@ function EndpointSection({
   copy,
   copied,
   baseUrl,
+  providerNodes = [],
 }) {
   const t = useTranslations("endpoint");
   const grouped = useMemo(() => {
@@ -1146,8 +1179,14 @@ function EndpointSection({
   }, [models]);
 
   const resolveProvider = (id) => AI_PROVIDERS[id] || getProviderByAlias(id);
-  const providerColor = (id) => resolveProvider(id)?.color || "#888";
-  const providerName = (id) => resolveProvider(id)?.name || id;
+  const providerColor = (id) => {
+    const provider = resolveProvider(id);
+    if (provider?.color) return provider.color;
+    if (isOpenAICompatibleProvider(id)) return "#10A37F";
+    if (isAnthropicCompatibleProvider(id)) return "#D97757";
+    return "#888";
+  };
+  const providerName = (id) => getProviderDisplayName(id, providerNodes);
   const copyId = `endpoint_${path}`;
 
   return (
@@ -1244,4 +1283,5 @@ EndpointSection.propTypes = {
   copy: PropTypes.func.isRequired,
   copied: PropTypes.string,
   baseUrl: PropTypes.string.isRequired,
+  providerNodes: PropTypes.array,
 };

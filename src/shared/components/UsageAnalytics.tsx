@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import Card from "./Card";
 import { CardSkeleton } from "./Loading";
 import { fmtCompact as fmt, fmtFull, fmtCost } from "@/shared/utils/formatting";
+import { getProviderDisplayName } from "@/lib/display/names";
 import {
   StatCard,
   ActivityHeatmap,
@@ -26,6 +27,7 @@ import {
 export default function UsageAnalytics() {
   const [range, setRange] = useState("30d");
   const [analytics, setAnalytics] = useState<any>(null);
+  const [providerNodes, setProviderNodes] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -48,6 +50,13 @@ export default function UsageAnalytics() {
     fetchAnalytics();
   }, [fetchAnalytics]);
 
+  useEffect(() => {
+    fetch("/api/provider-nodes")
+      .then((r) => (r.ok ? r.json() : { nodes: [] }))
+      .then((d) => setProviderNodes(d.nodes || []))
+      .catch(() => {});
+  }, []);
+
   const ranges = [
     { value: "1d", label: "1D" },
     { value: "7d", label: "7D" },
@@ -62,10 +71,16 @@ export default function UsageAnalytics() {
     return models.length > 0 ? models[0].model : "—";
   }, [analytics]);
 
+  const providerMetrics = useMemo(() => {
+    return (analytics?.byProvider || []).map((item) => ({
+      ...item,
+      providerDisplayName: getProviderDisplayName(item.provider, providerNodes),
+    }));
+  }, [analytics, providerNodes]);
+
   const topProvider = useMemo(() => {
-    const providers = analytics?.byProvider || [];
-    return providers.length > 0 ? providers[0].provider : "—";
-  }, [analytics]);
+    return providerMetrics.length > 0 ? providerMetrics[0].providerDisplayName : "—";
+  }, [providerMetrics]);
 
   const busiestDay = useMemo(() => {
     const wp = analytics?.weeklyPattern || [];
@@ -75,8 +90,8 @@ export default function UsageAnalytics() {
   }, [analytics]);
 
   const providerCount = useMemo(() => {
-    return (analytics?.byProvider || []).length;
-  }, [analytics]);
+    return providerMetrics.length;
+  }, [providerMetrics]);
 
   if (loading && !analytics) return <CardSkeleton />;
   if (error) return <Card className="p-6 text-center text-red-500">Error: {error}</Card>;
@@ -184,7 +199,7 @@ export default function UsageAnalytics() {
       {/* Token & Cost Trend + Provider Cost Donut */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <DailyTrendChart dailyTrend={analytics?.dailyTrend} />
-        <ProviderCostDonut byProvider={analytics?.byProvider} />
+        <ProviderCostDonut byProvider={providerMetrics} />
       </div>
 
       {/* Model Usage Over Time (stacked area) */}
@@ -200,7 +215,7 @@ export default function UsageAnalytics() {
       </div>
 
       {/* Provider Breakdown Table */}
-      <ProviderTable byProvider={analytics?.byProvider} />
+      <ProviderTable byProvider={providerMetrics} />
 
       {/* API Key Table */}
       <ApiKeyTable byApiKey={analytics?.byApiKey} />

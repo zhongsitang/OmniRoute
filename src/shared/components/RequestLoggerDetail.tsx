@@ -7,6 +7,7 @@ import {
   getHttpStatusStyle as getStatusStyle,
 } from "@/shared/constants/colors";
 import { formatDuration, formatApiKeyLabel } from "@/shared/utils/formatting";
+import { getProviderDisplayName } from "@/lib/display/names";
 
 // ─── Payload Code Block ─────────────────────────────────────────────────────
 
@@ -45,7 +46,14 @@ function PayloadSection({ title, json, onCopy }) {
 
 // ─── Detail Modal ───────────────────────────────────────────────────────────
 
-export default function RequestLoggerDetail({ log, detail, loading, onClose, onCopy }) {
+export default function RequestLoggerDetail({
+  log,
+  detail,
+  loading,
+  providerNodes = [],
+  onClose,
+  onCopy,
+}) {
   // Close on Escape key
   useEffect(() => {
     const handler = (e) => {
@@ -63,10 +71,16 @@ export default function RequestLoggerDetail({ log, detail, loading, onClose, onC
       text: "#fff",
       label: (protocolKey || log.provider || "-").toUpperCase(),
     };
+  const providerLabel =
+    (log.provider?.startsWith("openai-compatible-") ||
+      log.provider?.startsWith("anthropic-compatible-")) &&
+    log.provider
+      ? getProviderDisplayName(log.provider, providerNodes)
+      : null;
   const providerColor = PROVIDER_COLORS[log.provider] || {
     bg: "#374151",
     text: "#fff",
-    label: (log.provider || "-").toUpperCase(),
+    label: providerLabel || (log.provider || "-").toUpperCase(),
   };
 
   const formatDate = (iso) => {
@@ -152,10 +166,10 @@ export default function RequestLoggerDetail({ log, detail, loading, onClose, onC
                 Provider
               </div>
               <span
-                className="inline-block px-2.5 py-1 rounded text-[10px] font-bold uppercase"
+                className="inline-block px-2.5 py-1 rounded text-[10px] font-bold"
                 style={{ backgroundColor: providerColor.bg, color: providerColor.text }}
               >
-                {providerColor.label}
+                {providerLabel || providerColor.label}
               </span>
             </div>
             <div>

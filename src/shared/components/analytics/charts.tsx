@@ -1060,7 +1060,8 @@ export function ProviderCostDonut({ byProvider }) {
       .sort((a, b) => b.cost - a.cost)
       .slice(0, 8)
       .map((item, i) => ({
-        name: item.provider,
+        id: item.provider,
+        name: item.providerDisplayName || item.provider,
         value: item.cost,
         fill: PROVIDER_COLORS[i % PROVIDER_COLORS.length],
       }));
@@ -1105,13 +1106,13 @@ export function ProviderCostDonut({ byProvider }) {
         </ResponsiveContainer>
         <div className="flex flex-col gap-1 min-w-0 flex-1">
           {pieData.map((seg, i) => (
-            <div key={i} className="flex items-center justify-between gap-2 text-xs">
+            <div key={`${seg.id}-${i}`} className="flex items-center justify-between gap-2 text-xs">
               <div className="flex items-center gap-1.5 min-w-0">
                 <span
                   className="w-2 h-2 rounded-full shrink-0"
                   style={{ backgroundColor: seg.fill }}
                 />
-                <span className="truncate text-text-main capitalize">{seg.name}</span>
+                <span className="truncate text-text-main">{seg.name}</span>
               </div>
               <span className="font-mono font-medium text-amber-500 shrink-0">
                 {fmtCost(seg.value)}
@@ -1230,8 +1231,8 @@ export function ProviderTable({ byProvider }) {
   const sorted = useMemo(() => {
     const arr = [...data];
     arr.sort((a, b) => {
-      const va = a[sortBy] ?? 0;
-      const vb = b[sortBy] ?? 0;
+      const va = sortBy === "provider" ? a.providerDisplayName || a.provider : (a[sortBy] ?? 0);
+      const vb = sortBy === "provider" ? b.providerDisplayName || b.provider : (b[sortBy] ?? 0);
       if (typeof va === "string")
         return sortOrder === "asc" ? va.localeCompare(vb) : vb.localeCompare(va);
       return sortOrder === "asc" ? va - vb : vb - va;
@@ -1315,7 +1316,7 @@ export function ProviderTable({ byProvider }) {
                         className="w-2 h-2 rounded-full shrink-0"
                         style={{ backgroundColor: PROVIDER_COLORS[i % PROVIDER_COLORS.length] }}
                       />
-                      <span className="font-medium capitalize">{p.provider}</span>
+                      <span className="font-medium">{p.providerDisplayName || p.provider}</span>
                     </div>
                   </td>
                   <td className="px-4 py-2.5 text-right font-mono text-text-muted">

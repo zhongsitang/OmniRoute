@@ -31,6 +31,7 @@ import {
 } from "@/shared/constants/providers";
 import { getModelsByProviderId } from "@/shared/constants/models";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
+import { getProviderDisplayName } from "@/lib/display/names";
 import {
   MODEL_COMPAT_PROTOCOL_KEYS,
   type ModelCompatProtocolKey,
@@ -546,9 +547,15 @@ export default function ProviderDetailPage() {
   const isAnthropicCompatible = isAnthropicCompatibleProvider(providerId);
   const isCompatible = isOpenAICompatible || isAnthropicCompatible;
   const isSearchProvider = providerId.endsWith("-search");
+  const providerDisplayName = getProviderDisplayName(providerId, providerNode, {
+    openAICompatibleLabel: t("openaiCompatibleName"),
+    anthropicCompatibleLabel: t("anthropicCompatibleName"),
+  });
 
   const providerStorageAlias = isCompatible ? providerId : providerAlias;
-  const providerDisplayAlias = isCompatible ? providerNode?.prefix || providerId : providerAlias;
+  const providerDisplayAlias = isCompatible
+    ? providerNode?.prefix || providerDisplayName
+    : providerAlias;
 
   // Define callbacks BEFORE the useEffect that uses them
   const fetchAliases = useCallback(async () => {
@@ -1556,7 +1563,7 @@ export default function ProviderDetailPage() {
                 setProxyTarget({
                   level: "provider",
                   id: providerId,
-                  label: providerInfo?.name || providerId,
+                  label: providerDisplayName,
                 })
               }
               className={`inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-medium transition-all ${
@@ -1826,7 +1833,7 @@ export default function ProviderDetailPage() {
                 <div className="flex flex-col gap-3">
                   {batchTestResults.summary && (
                     <div className="flex items-center gap-3 text-xs mb-1">
-                      <span className="text-text-muted">{providerInfo?.name || providerId}</span>
+                      <span className="text-text-muted">{providerDisplayName}</span>
                       <span className="px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-400 font-medium">
                         {t("passedCount", { count: batchTestResults.summary.passed })}
                       </span>

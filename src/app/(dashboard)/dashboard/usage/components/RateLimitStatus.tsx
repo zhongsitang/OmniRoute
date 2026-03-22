@@ -80,12 +80,18 @@ export default function RateLimitStatus() {
                     lock
                   </span>
                   <div>
-                    <p className="text-sm font-medium">{lock.model}</p>
+                    <p className="text-sm font-medium break-all">
+                      {lock.scopedModelName || `${lock.provider || tc("unknown")} / ${lock.model}`}
+                    </p>
                     <p className="text-xs text-text-muted">
                       {t("account")}:{" "}
-                      <span className="font-mono">
-                        {lock.accountId?.slice(0, 12) || tc("none")}
-                      </span>
+                      <span className="font-medium">{lock.accountName || tc("none")}</span>
+                      {lock.connectionId && (
+                        <>
+                          {t("reasonSeparator")}
+                          <span className="font-mono">{lock.connectionId.slice(0, 12)}</span>
+                        </>
+                      )}
                       {lock.reason && (
                         <>
                           {t("reasonSeparator")}

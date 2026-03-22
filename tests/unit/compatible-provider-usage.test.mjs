@@ -14,6 +14,7 @@ const usageRoute = await import("../../src/app/api/usage/[connectionId]/route.ts
 const usageService = await import("../../open-sse/services/usage.ts");
 const providerLimitUtils =
   await import("../../src/app/(dashboard)/dashboard/usage/components/ProviderLimits/utils.tsx");
+const quotaCache = await import("../../src/domain/quotaCache.ts");
 
 async function settleBackupTasks() {
   await new Promise((resolve) => setTimeout(resolve, 50));
@@ -190,6 +191,7 @@ test("compatible provider parser falls back to nested fields for incompatible us
 
 test("usage route returns compatible api key balance payload", async () => {
   const originalFetch = globalThis.fetch;
+  const explicitResetAt = "2026-04-22T00:00:00Z";
 
   globalThis.fetch = async () =>
     new Response(
@@ -200,6 +202,7 @@ test("usage route returns compatible api key balance payload", async () => {
         subscription: {
           daily_limit_usd: 20,
           daily_usage_usd: 10.5,
+          daily_reset_at: explicitResetAt,
         },
       }),
       {
@@ -234,6 +237,19 @@ test("usage route returns compatible api key balance payload", async () => {
     assert.equal(payload.balance.kind, "periodic");
     assert.equal(payload.balance.limit, 20);
     assert.equal(payload.balance.used, 10.5);
+    assert.equal(
+      new Date(payload.balance.resetAt).toISOString(),
+      new Date(explicitResetAt).toISOString()
+    );
+
+    const cached = quotaCache.getQuotaCache(connection.id);
+    assert.ok(cached);
+    assert.equal(cached.provider, connection.provider);
+    assert.equal(cached.exhausted, false);
+    assert.equal(
+      new Date(cached.quotas.daily.resetAt).toISOString(),
+      new Date(explicitResetAt).toISOString()
+    );
   } finally {
     restoreFetch(originalFetch);
   }

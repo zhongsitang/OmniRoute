@@ -4,7 +4,11 @@ import {
   updateProviderConnection,
   getSettings,
 } from "@/lib/localDb";
-import { getQuotaWindowStatus, isAccountQuotaExhausted } from "@/domain/quotaCache";
+import {
+  getQuotaWindowStatus,
+  isAccountQuotaExhausted,
+  getQuotaResetAt,
+} from "@/domain/quotaCache";
 import {
   isAccountUnavailable,
   getUnavailableUntil,
@@ -237,6 +241,21 @@ function getEarliestFutureDate(candidates: Array<string | null>): string | null 
   );
 }
 
+async function recordConnectionUsage(
+  connection: ProviderConnectionView | undefined,
+  update: Partial<Pick<ProviderConnectionView, "lastUsedAt" | "consecutiveUseCount">> = {}
+) {
+  if (!connection?.id) return;
+
+  await updateProviderConnection(connection.id, {
+    lastUsedAt: update.lastUsedAt || new Date().toISOString(),
+    consecutiveUseCount:
+      update.consecutiveUseCount !== undefined
+        ? update.consecutiveUseCount
+        : connection.consecutiveUseCount || 0,
+  });
+}
+
 // Mutex to prevent race conditions during account selection
 let selectionMutex = Promise.resolve();
 
@@ -259,8 +278,10 @@ export { fisherYatesShuffle, getNextFromDeckSync as getNextFromDeck };
 export async function getProviderCredentials(
   provider: string,
   excludeConnectionId: string | null = null,
-  allowedConnections: string[] | null = null
+  allowedConnections: string[] | null = null,
+  options: { liveProbe?: boolean } = {}
 ) {
+  const liveProbe = options.liveProbe === true;
   // Acquire mutex to prevent race conditions
   const currentMutex = selectionMutex;
   let resolveMutex: (() => void) | undefined;
@@ -319,7 +340,7 @@ export async function getProviderCredentials(
     // Filter out unavailable accounts and excluded connection
     const availableConnections = connections.filter((c) => {
       if (excludeConnectionId && c.id === excludeConnectionId) return false;
-      if (isAccountUnavailable(c.rateLimitedUntil)) return false;
+      if (!liveProbe && isAccountUnavailable(c.rateLimitedUntil)) return false;
       return true;
     });
 
@@ -373,17 +394,19 @@ export async function getProviderCredentials(
       resetAt: string | null;
     }> = [];
 
-    policyEligibleConnections = availableConnections.filter((connection) => {
-      const evaluation = evaluateQuotaLimitPolicy(provider, connection);
-      if (!evaluation.blocked) return true;
+    if (!liveProbe) {
+      policyEligibleConnections = availableConnections.filter((connection) => {
+        const evaluation = evaluateQuotaLimitPolicy(provider, connection);
+        if (!evaluation.blocked) return true;
 
-      blockedByPolicy.push({
-        id: connection.id,
-        reasons: evaluation.reasons,
-        resetAt: evaluation.resetAt,
+        blockedByPolicy.push({
+          id: connection.id,
+          reasons: evaluation.reasons,
+          resetAt: evaluation.resetAt,
+        });
+        return false;
       });
-      return false;
-    });
+    }
 
     if (blockedByPolicy.length > 0) {
       log.info(
@@ -455,10 +478,11 @@ export async function getProviderCredentials(
             `${provider} round-robin: staying with ${current.id?.slice(0, 8)}... (count=${currentCount}/${stickyLimit})`
           );
           // Update lastUsedAt and increment count (await to ensure persistence)
-          await updateProviderConnection(connection.id, {
-            lastUsedAt: new Date().toISOString(),
-            consecutiveUseCount: (connection.consecutiveUseCount || 0) + 1,
-          });
+          if (!liveProbe) {
+            await recordConnectionUsage(connection, {
+              consecutiveUseCount: (connection.consecutiveUseCount || 0) + 1,
+            });
+          }
         } else {
           // Pick the least recently used (excluding current if possible)
           // Also penalize accounts with high backoffLevel (previously rate-limited)
@@ -481,10 +505,11 @@ export async function getProviderCredentials(
           );
 
           // Update lastUsedAt and reset count to 1 (await to ensure persistence)
-          await updateProviderConnection(connection.id, {
-            lastUsedAt: new Date().toISOString(),
-            consecutiveUseCount: 1,
-          });
+          if (!liveProbe) {
+            await recordConnectionUsage(connection, {
+              consecutiveUseCount: 1,
+            });
+          }
         }
       } else {
         // Fallback scenario: excluded an account due to failure
@@ -507,10 +532,11 @@ export async function getProviderCredentials(
         );
 
         // Update lastUsedAt and reset count to 1 (await to ensure persistence)
-        await updateProviderConnection(connection.id, {
-          lastUsedAt: new Date().toISOString(),
-          consecutiveUseCount: 1,
-        });
+        if (!liveProbe) {
+          await recordConnectionUsage(connection, {
+            consecutiveUseCount: 1,
+          });
+        }
       }
     } else if (strategy === "p2c") {
       // Power of Two Choices: pick 2 random, choose the one with fewer failures
@@ -557,6 +583,10 @@ export async function getProviderCredentials(
       connection = orderedConnections[0];
     }
 
+    if (strategy !== "round-robin" && !liveProbe) {
+      await recordConnectionUsage(connection);
+    }
+
     return {
       apiKey: connection.apiKey,
       accessToken: connection.accessToken,
@@ -576,6 +606,7 @@ export async function getProviderCredentials(
       lastErrorSource: connection.lastErrorSource,
       errorCode: connection.errorCode,
       rateLimitedUntil: connection.rateLimitedUntil,
+      backoffLevel: connection.backoffLevel || 0,
     };
   } finally {
     if (resolveMutex) resolveMutex();
@@ -642,6 +673,24 @@ export async function markAccountUnavailable(
     );
     if (!shouldFallback) return { shouldFallback: false, cooldownMs: 0 };
 
+    let resolvedCooldownMs = cooldownMs;
+    let rateLimitedUntil = resolvedCooldownMs > 0 ? getUnavailableUntil(resolvedCooldownMs) : null;
+
+    if (reason === "quota_exhausted") {
+      const quotaResetAt = getQuotaResetAt(connectionId);
+      if (quotaResetAt) {
+        const exactCooldownMs = new Date(quotaResetAt).getTime() - Date.now();
+        if (exactCooldownMs > 0) {
+          resolvedCooldownMs = exactCooldownMs;
+          rateLimitedUntil = quotaResetAt;
+          log.info(
+            "AUTH",
+            `${connectionId.slice(0, 8)} quota exhausted — locking until provider reset ${quotaResetAt}`
+          );
+        }
+      }
+    }
+
     // ── Local provider 404: model-only lockout, connection stays active ──
     // Detection: URL-based only (apiKey===null heuristic was too broad — could match
     // cloud providers with non-standard auth stored in providerSpecificData).
@@ -659,7 +708,6 @@ export async function markAccountUnavailable(
       return { shouldFallback: true, cooldownMs: localCooldown };
     }
 
-    const rateLimitedUntil = getUnavailableUntil(cooldownMs);
     const errorMsg = typeof errorText === "string" ? errorText.slice(0, 100) : "Provider error";
 
     await updateProviderConnection(connectionId, {
@@ -672,15 +720,15 @@ export async function markAccountUnavailable(
     });
 
     // Per-model lockout: lock the specific model if known
-    if (provider && model && cooldownMs > 0) {
-      lockModel(provider, connectionId, model, reason || "unknown", cooldownMs);
+    if (provider && model && resolvedCooldownMs > 0) {
+      lockModel(provider, connectionId, model, reason || "unknown", resolvedCooldownMs);
     }
 
     if (provider && status && errorMsg) {
       console.error(`❌ ${provider} [${status}]: ${errorMsg}`);
     }
 
-    return { shouldFallback: true, cooldownMs };
+    return { shouldFallback: true, cooldownMs: resolvedCooldownMs };
   } finally {
     if (resolveMutex) resolveMutex();
     // Cleanup stale mutex entries (avoid memory leak)

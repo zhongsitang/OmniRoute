@@ -32,6 +32,19 @@ interface Message {
   [key: string]: unknown;
 }
 
+function hasOwn(obj: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+function isResponsesShape(body: Record<string, unknown>): boolean {
+  return (
+    (hasOwn(body, "input") && body.input !== undefined) ||
+    body.max_output_tokens !== undefined ||
+    body.previous_response_id !== undefined ||
+    body.reasoning !== undefined
+  );
+}
+
 // ── Context Caching Tag ─────────────────────────────────────────────────────
 
 const CACHE_TAG_PATTERN = /<omniModel>([^<]+)<\/omniModel>/;
@@ -158,11 +171,13 @@ export function applyComboAgentMiddleware(
 ): { body: Record<string, unknown>; pinnedModel: string | null } {
   if (!comboConfig) return { body, pinnedModel: null };
 
+  const responsesShape = isResponsesShape(body);
   let messages: Message[] = Array.isArray(body.messages) ? [...body.messages] : [];
   let pinnedModel: string | null = null;
+  let instructions = body.instructions;
 
   // 1. Context caching: check for pinned model in history
-  if (comboConfig.context_cache_protection) {
+  if (comboConfig.context_cache_protection && !responsesShape) {
     pinnedModel = extractPinnedModel(messages);
     if (pinnedModel) {
       // Model is pinned — caller should override model selection
@@ -171,7 +186,11 @@ export function applyComboAgentMiddleware(
 
   // 2. System message override
   if (comboConfig.system_message && comboConfig.system_message.trim()) {
-    messages = applySystemMessageOverride(messages, comboConfig.system_message);
+    if (responsesShape) {
+      instructions = comboConfig.system_message;
+    } else {
+      messages = applySystemMessageOverride(messages, comboConfig.system_message);
+    }
   }
 
   // 3. Tool filter
@@ -185,12 +204,22 @@ export function applyComboAgentMiddleware(
   //    since providers would treat each tagged request as a new cache session.
   messages = stripModelTags(messages);
 
+  const nextBody: Record<string, unknown> = {
+    ...body,
+    ...(filteredTools !== body.tools && { tools: filteredTools }),
+  };
+
+  if (responsesShape) {
+    delete nextBody.messages;
+    if (instructions !== undefined) {
+      nextBody.instructions = instructions;
+    }
+  } else {
+    nextBody.messages = messages;
+  }
+
   return {
-    body: {
-      ...body,
-      messages,
-      ...(filteredTools !== body.tools && { tools: filteredTools }),
-    },
+    body: nextBody,
     pinnedModel,
   };
 }

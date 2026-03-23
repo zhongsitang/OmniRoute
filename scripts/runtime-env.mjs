@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { existsSync, readdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
 
 export function parsePort(value, fallback) {
   const parsed = Number.parseInt(String(value), 10);
@@ -35,6 +37,46 @@ export function sanitizeColorEnv(env = {}) {
   }
 
   return sanitized;
+}
+
+function isStandaloneBuildDir(dir) {
+  return (
+    existsSync(join(dir, "server.js")) &&
+    existsSync(join(dir, "package.json")) &&
+    existsSync(join(dir, ".next")) &&
+    existsSync(join(dir, "src", "app"))
+  );
+}
+
+export function removeStandaloneAppArtifacts(projectRoot, logger = console) {
+  const srcAppDir = join(projectRoot, "src", "app");
+  if (!existsSync(srcAppDir)) return [];
+
+  const candidates = readdirSync(projectRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .filter(
+      (name) =>
+        name === "app" ||
+        name === "app.__qa_backup" ||
+        name === "app.__next_dev_hidden" ||
+        name.startsWith("app.__next_dev_hidden.")
+    );
+
+  const removed = [];
+  for (const name of candidates) {
+    const targetDir = join(projectRoot, name);
+    if (!isStandaloneBuildDir(targetDir)) continue;
+
+    rmSync(targetDir, { recursive: true, force: true });
+    removed.push(name);
+  }
+
+  if (removed.length > 0) {
+    logger.log(`[dev-bootstrap] Removed conflicting standalone artifact(s): ${removed.join(", ")}`);
+  }
+
+  return removed;
 }
 
 export function spawnWithForwardedSignals(command, args, options = {}) {

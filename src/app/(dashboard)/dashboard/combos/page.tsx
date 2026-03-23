@@ -6,6 +6,7 @@ import {
   Button,
   Modal,
   Input,
+  Select,
   Toggle,
   CardSkeleton,
   ModelSelectModal,
@@ -355,6 +356,90 @@ function getModelString(entry) {
   return typeof entry === "string" ? entry : entry.model;
 }
 
+function formatModelDisplay(modelValue, providerNodes = []) {
+  const parts = modelValue.split("/");
+  if (parts.length !== 2) return modelValue;
+
+  const [providerIdentifier, modelId] = parts;
+  const matchedNode = providerNodes.find(
+    (node) => node.id === providerIdentifier || node.prefix === providerIdentifier
+  );
+
+  return matchedNode ? `${matchedNode.name}/${modelId}` : modelValue;
+}
+
+function createTestResultsState(combo, protocol, status = "idle") {
+  return {
+    comboName: combo?.name || "",
+    protocol,
+    strategy: combo?.strategy || "priority",
+    resolvedBy: null,
+    testedAt: null,
+    error: null,
+    results: (combo?.models || []).map((entry, index) => ({
+      index,
+      model: getModelString(entry),
+      status,
+    })),
+  };
+}
+
+function mergeStreamedTestResult(current, nextResult) {
+  if (!current) return current;
+
+  return {
+    ...current,
+    error: null,
+    testedAt: new Date().toISOString(),
+    results: (current.results || []).map((result) =>
+      result.index === nextResult.index ? { ...result, ...nextResult } : result
+    ),
+  };
+}
+
+async function consumeTestComboResponse(response, onEvent) {
+  const contentType = response.headers.get("content-type") || "";
+
+  if (!response.body || !contentType.includes("application/x-ndjson")) {
+    onEvent({ type: "complete", data: await response.json() });
+    return;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line) continue;
+
+      try {
+        onEvent(JSON.parse(line));
+      } catch {
+        // Ignore malformed lines and keep reading the stream.
+      }
+    }
+  }
+
+  buffer += decoder.decode();
+  const finalLine = buffer.trim();
+  if (!finalLine) return;
+
+  try {
+    onEvent(JSON.parse(finalLine));
+  } catch {
+    // Ignore malformed trailing payloads.
+  }
+}
+
 // ─────────────────────────────────────────────
 // Main Page
 // ─────────────────────────────────────────────
@@ -378,6 +463,14 @@ export default function CombosPage() {
   const [providerNodes, setProviderNodes] = useState([]);
   const [showUsageGuide, setShowUsageGuide] = useState(true);
   const [recentlyCreatedCombo, setRecentlyCreatedCombo] = useState("");
+  const activeTestRequestRef = useRef({ requestId: 0, controller: null });
+
+  const abortActiveTest = useCallback(() => {
+    if (activeTestRequestRef.current.controller) {
+      activeTestRequestRef.current.controller.abort();
+      activeTestRequestRef.current.controller = null;
+    }
+  }, []);
 
   useEffect(() => {
     fetchData();
@@ -396,6 +489,12 @@ export default function CombosPage() {
       // Ignore storage access errors (privacy mode / restricted environments)
     }
   }, []);
+
+  useEffect(() => {
+    return () => {
+      abortActiveTest();
+    };
+  }, [abortActiveTest]);
 
   const fetchData = async () => {
     try {
@@ -501,32 +600,87 @@ export default function CombosPage() {
   };
 
   const handleOpenTestComboModal = (combo) => {
-    setSelectedTestProtocol("responses");
-    setTestResults(null);
+    abortActiveTest();
+    const defaultProtocol = "responses";
+    setSelectedTestProtocol(defaultProtocol);
+    setTestResults(createTestResultsState(combo, defaultProtocol));
     setTestingCombo(null);
     setTestTargetCombo(combo);
   };
 
   const handleTestCombo = async (combo, protocol = selectedTestProtocol) => {
+    abortActiveTest();
+    const controller = new AbortController();
+    const requestId = activeTestRequestRef.current.requestId + 1;
+    activeTestRequestRef.current = { requestId, controller };
+
     setTestingCombo(combo.name);
-    setTestResults(null);
+    setTestResults(createTestResultsState(combo, protocol, "pending"));
+
     try {
       const res = await fetch("/api/combos/test", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/x-ndjson",
+        },
         body: JSON.stringify({ comboName: combo.name, protocol }),
+        signal: controller.signal,
       });
-      const data = await res.json();
-      setTestResults(data);
+
+      if (!res.ok) {
+        let errorMessage = t("testFailed");
+        try {
+          const err = await res.json();
+          errorMessage = err?.error?.message || err?.error || errorMessage;
+        } catch {}
+        throw new Error(errorMessage);
+      }
+
+      await consumeTestComboResponse(res, (event) => {
+        if (activeTestRequestRef.current.requestId !== requestId) return;
+
+        if (event.type === "start" && event.data) {
+          setTestResults(event.data);
+          return;
+        }
+
+        if (event.type === "result" && event.data) {
+          setTestResults((current) => mergeStreamedTestResult(current, event.data));
+          return;
+        }
+
+        if (event.type === "complete" && event.data) {
+          setTestResults(event.data);
+          return;
+        }
+
+        if (event.type === "error") {
+          setTestResults((current) => ({
+            ...(current || createTestResultsState(combo, protocol)),
+            error: event.error || t("testFailed"),
+          }));
+        }
+      });
     } catch (error) {
-      setTestResults({ error: t("testFailed") });
-      notify.error(t("testFailed"));
+      if (error?.name === "AbortError") return;
+
+      const errorMessage = error?.message || t("testFailed");
+      setTestResults((current) => ({
+        ...(current || createTestResultsState(combo, protocol)),
+        error: errorMessage,
+      }));
+      notify.error(errorMessage);
     } finally {
-      setTestingCombo(null);
+      if (activeTestRequestRef.current.requestId === requestId) {
+        activeTestRequestRef.current.controller = null;
+        setTestingCombo(null);
+      }
     }
   };
 
   const handleCloseTestComboModal = () => {
+    abortActiveTest();
     setTestTargetCombo(null);
     setTestResults(null);
     setTestingCombo(null);
@@ -535,6 +689,12 @@ export default function CombosPage() {
   const handleConfirmTestCombo = async () => {
     if (!testTargetCombo) return;
     await handleTestCombo(testTargetCombo, selectedTestProtocol);
+  };
+
+  const handleTestProtocolChange = (protocol) => {
+    if (!testTargetCombo || testingCombo === testTargetCombo.name) return;
+    setSelectedTestProtocol(protocol);
+    setTestResults(createTestResultsState(testTargetCombo, protocol));
   };
 
   const handleToggleCombo = async (combo) => {
@@ -572,33 +732,9 @@ export default function CombosPage() {
 
   const isTestingTargetCombo = !!testTargetCombo && testingCombo === testTargetCombo.name;
   const selectedProtocolOption = getTestProtocolOption(t, selectedTestProtocol);
-  const testStatusBadge = isTestingTargetCombo
-    ? {
-        icon: "progress_activity",
-        label: getI18nOrFallback(t, "testing", "Testing..."),
-        tone: "bg-primary/10 text-primary",
-        spin: true,
-      }
-    : testResults?.error
-      ? {
-          icon: "error",
-          label: getI18nOrFallback(t, "testFailed", "Test failed"),
-          tone: "bg-red-500/10 text-red-500",
-          spin: false,
-        }
-      : testResults
-        ? {
-            icon: "check_circle",
-            label: getI18nOrFallback(t, "testProtocol.resultsReady", "Results ready"),
-            tone: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
-            spin: false,
-          }
-        : {
-            icon: "radio_button_checked",
-            label: getI18nOrFallback(t, "testProtocol.ready", "Ready"),
-            tone: "bg-black/5 dark:bg-white/10 text-text-muted",
-            spin: false,
-          };
+  const visibleTestResults = testTargetCombo
+    ? testResults || createTestResultsState(testTargetCombo, selectedTestProtocol)
+    : null;
 
   if (loading) {
     return (
@@ -638,22 +774,22 @@ export default function CombosPage() {
 
       {recentlyCreatedCombo && (
         <Card
-          padding="sm"
+          padding="md"
           className="border border-emerald-500/20 bg-emerald-500/[0.04] dark:bg-emerald-500/[0.08]"
         >
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="min-w-0">
-              <p className="text-sm font-medium text-emerald-700 dark:text-emerald-300">
+              <p className="text-base font-semibold text-emerald-700 dark:text-emerald-300">
                 {getI18nOrFallback(
                   t,
                   "quickTestTitle",
                   `Combo "${recentlyCreatedCombo}" ready to validate`
                 )}
               </p>
-              <code className="inline-block text-[11px] mt-0.5 px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300">
+              <code className="mt-1 inline-block rounded bg-emerald-500/15 px-1.5 py-0.5 text-xs text-emerald-700 dark:text-emerald-300">
                 {recentlyCreatedCombo}
               </code>
-              <p className="text-xs text-text-muted mt-0.5">
+              <p className="mt-1 text-sm text-text-muted">
                 {getI18nOrFallback(
                   t,
                   "quickTestDescription",
@@ -717,171 +853,76 @@ export default function CombosPage() {
         <Modal
           isOpen={!!testTargetCombo}
           onClose={handleCloseTestComboModal}
-          title={getI18nOrFallback(t, "testCombo", "Test combo")}
-          size="md"
-          footer={
-            <>
-              <Button variant="ghost" onClick={handleCloseTestComboModal}>
-                {tc("close")}
-              </Button>
-              <Button
-                icon="play_arrow"
-                onClick={handleConfirmTestCombo}
-                loading={isTestingTargetCombo}
-                disabled={isTestingTargetCombo}
-                className="min-w-[132px]"
-              >
-                {getI18nOrFallback(t, "testNow", "Test now")}
-              </Button>
-            </>
+          title={
+            <span className="flex items-center gap-2 min-w-0">
+              <span>{getI18nOrFallback(t, "testCombo", "Test combo")}</span>
+              <code className="max-w-[220px] truncate rounded bg-black/5 px-1.5 py-0.5 text-xs font-normal dark:bg-white/10">
+                {testTargetCombo.name}
+              </code>
+            </span>
           }
+          size="md"
         >
           <div className="flex flex-col gap-4">
-            <div className="flex flex-wrap items-start justify-between gap-3 rounded-xl border border-black/10 dark:border-white/10 bg-black/[0.02] dark:bg-white/[0.02] px-4 py-3">
-              <div className="min-w-0">
-                <p className="text-sm font-medium text-text-main">
-                  <code className="rounded bg-black/5 px-1.5 py-0.5 text-xs dark:bg-white/10">
-                    {testTargetCombo.name}
-                  </code>
-                </p>
-                <p className="text-xs text-text-muted mt-1">
-                  {getI18nOrFallback(
-                    t,
-                    "testProtocol.liveProbeHint",
-                    "Runs a live provider probe for the selected protocol and keeps the result area stable while it updates."
-                  )}
-                </p>
-              </div>
-              <div
-                className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-medium ${testStatusBadge.tone}`}
-              >
-                <span
-                  className={`material-symbols-outlined text-[14px] ${
-                    testStatusBadge.spin ? "animate-spin" : ""
-                  }`}
+            <div className="grid gap-2">
+              <p className="text-sm font-medium text-text-main">
+                {getI18nOrFallback(
+                  t,
+                  "testProtocol.prompt",
+                  "Select which protocol this combo health check should use."
+                )}
+              </p>
+              <p className="text-xs text-text-muted -mt-1">{selectedProtocolOption.description}</p>
+              <div className="flex flex-wrap items-end gap-3">
+                <Select
+                  options={TEST_PROTOCOL_OPTIONS.map((option) => {
+                    const localized = getTestProtocolOption(t, option.value);
+                    return {
+                      value: option.value,
+                      label: localized.label,
+                    };
+                  })}
+                  value={selectedTestProtocol}
+                  onChange={(e) => handleTestProtocolChange(e.target.value)}
+                  disabled={isTestingTargetCombo}
+                  className="flex-1 sm:max-w-[320px]"
+                />
+                <Button
+                  icon="play_arrow"
+                  onClick={handleConfirmTestCombo}
+                  loading={isTestingTargetCombo}
+                  disabled={isTestingTargetCombo}
+                  className="min-w-[132px]"
                 >
-                  {testStatusBadge.icon}
-                </span>
-                {testStatusBadge.label}
+                  {getI18nOrFallback(t, "testNow", "Test now")}
+                </Button>
               </div>
             </div>
 
-            <div className="flex flex-col gap-4">
-              <div className="grid gap-2">
-                <p className="text-sm font-medium text-text-main">
-                  {getI18nOrFallback(
-                    t,
-                    "testProtocol.prompt",
-                    "Select which protocol this combo health check should use."
-                  )}
+            <div className="rounded-xl border border-black/10 dark:border-white/10 bg-black/[0.02] dark:bg-white/[0.02] p-4 min-h-[280px]">
+              <div className="flex items-center justify-between gap-3 border-b border-black/5 dark:border-white/5 pb-3">
+                <p className="shrink-0 text-sm font-medium text-text-main">
+                  {getI18nOrFallback(t, "testProtocol.liveResult", "Live result")}
                 </p>
-                <p className="text-xs text-text-muted -mt-1">
-                  {getI18nOrFallback(
-                    t,
-                    "testProtocol.protocolHint",
-                    "You can switch protocol at any time. The result panel keeps its place to avoid layout jumps."
+                <div className="min-w-0 flex min-h-6 flex-1 items-center justify-end">
+                  {visibleTestResults?.resolvedBy && (
+                    <div className="flex min-w-0 max-w-full items-center gap-1.5 overflow-hidden whitespace-nowrap text-xs text-emerald-600 dark:text-emerald-400">
+                      <span className="material-symbols-outlined shrink-0 text-[16px]">
+                        check_circle
+                      </span>
+                      <span className="shrink-0 text-text-muted">
+                        {getI18nOrFallback(t, "testProtocol.resolvedBy", "Resolved by")}:
+                      </span>
+                      <code className="min-w-0 truncate rounded bg-emerald-500/10 px-1.5 py-0.5">
+                        {formatModelDisplay(visibleTestResults.resolvedBy, providerNodes)}
+                      </code>
+                    </div>
                   )}
-                </p>
-                <div className="grid gap-2">
-                  {TEST_PROTOCOL_OPTIONS.map((option) => {
-                    const localized = getTestProtocolOption(t, option.value);
-                    const active = selectedTestProtocol === option.value;
-                    return (
-                      <button
-                        key={option.value}
-                        type="button"
-                        onClick={() => {
-                          if (isTestingTargetCombo) return;
-                          setSelectedTestProtocol(option.value);
-                        }}
-                        className={`text-left rounded-xl border px-4 py-3 transition-colors ${
-                          active
-                            ? "border-primary bg-primary/10"
-                            : "border-black/10 dark:border-white/10 hover:border-primary/40"
-                        }`}
-                        disabled={isTestingTargetCombo}
-                      >
-                        <div className="flex items-center gap-3">
-                          <span className="material-symbols-outlined text-[18px] text-primary">
-                            {localized.icon}
-                          </span>
-                          <div className="min-w-0">
-                            <p className="text-sm font-medium text-text-main">{localized.label}</p>
-                            <p className="text-xs text-text-muted mt-0.5">
-                              {localized.description}
-                            </p>
-                          </div>
-                        </div>
-                      </button>
-                    );
-                  })}
                 </div>
               </div>
 
-              <div className="rounded-xl border border-black/10 dark:border-white/10 bg-black/[0.02] dark:bg-white/[0.02] p-4 min-h-[280px]">
-                <div className="flex items-center justify-between gap-3 border-b border-black/5 dark:border-white/5 pb-3">
-                  <div>
-                    <p className="text-sm font-medium text-text-main">
-                      {getI18nOrFallback(t, "testProtocol.liveResult", "Live result")}
-                    </p>
-                    <p className="text-xs text-text-muted mt-0.5">
-                      {getI18nOrFallback(
-                        t,
-                        "testProtocol.liveResultHint",
-                        "The content updates in place so the modal stays steady during a probe."
-                      )}
-                    </p>
-                  </div>
-                  <code className="shrink-0 rounded bg-primary/10 px-2 py-1 text-[11px] text-primary">
-                    {selectedProtocolOption.label}
-                  </code>
-                </div>
-
-                <div className="mt-4 max-h-[320px] overflow-y-auto pr-1">
-                  {isTestingTargetCombo ? (
-                    <div className="flex min-h-[220px] flex-col items-center justify-center gap-3 text-center">
-                      <span className="material-symbols-outlined animate-spin text-[28px] text-primary">
-                        progress_activity
-                      </span>
-                      <div>
-                        <p className="text-sm font-medium text-text-main">
-                          {getI18nOrFallback(t, "testing", "Testing...")}
-                        </p>
-                        <p className="text-xs text-text-muted mt-1">
-                          {getI18nOrFallback(
-                            t,
-                            "testProtocol.loadingHint",
-                            "Probing the selected protocol and waiting for live results."
-                          )}
-                        </p>
-                      </div>
-                    </div>
-                  ) : testResults ? (
-                    <TestResultsView results={testResults} />
-                  ) : (
-                    <div className="flex min-h-[220px] flex-col items-center justify-center gap-3 text-center">
-                      <span className="material-symbols-outlined text-[28px] text-text-muted">
-                        preview
-                      </span>
-                      <div>
-                        <p className="text-sm font-medium text-text-main">
-                          {getI18nOrFallback(
-                            t,
-                            "testProtocol.readyTitle",
-                            "Ready for a live probe"
-                          )}
-                        </p>
-                        <p className="text-xs text-text-muted mt-1">
-                          {getI18nOrFallback(
-                            t,
-                            "testProtocol.readyHint",
-                            "Choose a protocol on the left and run the test. Results will appear here without collapsing the modal."
-                          )}
-                        </p>
-                      </div>
-                    </div>
-                  )}
-                </div>
+              <div className="mt-4 max-h-[320px] overflow-y-auto pr-1 [scrollbar-gutter:stable]">
+                <TestResultsView results={visibleTestResults} providerNodes={providerNodes} />
               </div>
             </div>
           </div>
@@ -927,49 +968,44 @@ function ComboUsageGuide({ onHide, onHideForever }) {
   const guideStrategies = ["priority", "cost-optimized", "least-used"];
 
   return (
-    <Card padding="sm">
+    <Card padding="md">
       <div className="flex items-start justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
-          <div className="size-7 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
-            <span className="material-symbols-outlined text-primary text-[16px]">
+          <div className="size-8 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
+            <span className="material-symbols-outlined text-primary text-[18px]">
               tips_and_updates
             </span>
           </div>
           <div className="min-w-0">
-            <h2 className="text-sm font-semibold">{t("routingStrategy")}</h2>
-            <p className="text-xs text-text-muted mt-0.5">{t("description")}</p>
+            <h2 className="text-base font-semibold">{t("routingStrategy")}</h2>
+            <p className="text-sm text-text-muted mt-0.5">{t("description")}</p>
           </div>
         </div>
         <div className="flex items-center gap-1 shrink-0">
-          <Button size="sm" variant="ghost" onClick={onHide} className="!h-6 px-2 text-[10px]">
+          <Button size="sm" variant="ghost" onClick={onHide}>
             {getI18nOrFallback(t, "usageGuideHide", "Hide")}
           </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={onHideForever}
-            className="!h-6 px-2 text-[10px]"
-          >
+          <Button size="sm" variant="ghost" onClick={onHideForever}>
             {getI18nOrFallback(t, "usageGuideDontShowAgain", "Don't show again")}
           </Button>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mt-3">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-4">
         {guideStrategies.map((strategyValue) => {
           const strategyMeta = getStrategyMeta(strategyValue);
           return (
             <div
               key={strategyValue}
-              className="rounded-lg border border-black/10 dark:border-white/10 bg-black/[0.02] dark:bg-white/[0.02] p-2.5"
+              className="rounded-lg border border-black/10 dark:border-white/10 bg-black/[0.02] dark:bg-white/[0.02] p-3"
             >
-              <div className="flex items-center gap-1.5">
-                <span className="material-symbols-outlined text-[14px] text-primary">
+              <div className="flex items-center gap-2">
+                <span className="material-symbols-outlined text-[16px] text-primary">
                   {strategyMeta.icon}
                 </span>
-                <span className="text-xs font-medium">{getStrategyLabel(t, strategyValue)}</span>
+                <span className="text-sm font-medium">{getStrategyLabel(t, strategyValue)}</span>
               </div>
-              <p className="text-[11px] leading-4 text-text-muted mt-1.5">
+              <p className="text-xs leading-5 text-text-muted mt-2">
                 {getStrategyDescription(t, strategyValue)}
               </p>
             </div>
@@ -1183,17 +1219,6 @@ function ComboCard({
   const tc = useTranslations("common");
   const strategyDescription = getStrategyDescription(t, strategy);
 
-  // Resolve provider UUID to user-defined name
-  const formatModelDisplay = (modelValue) => {
-    const parts = modelValue.split("/");
-    if (parts.length !== 2) return modelValue;
-    const [providerIdentifier, modelId] = parts;
-    const matchedNode = (providerNodes || []).find(
-      (node) => node.id === providerIdentifier || node.prefix === providerIdentifier
-    );
-    return matchedNode ? `${matchedNode.name}/${modelId}` : modelValue;
-  };
-
   return (
     <Card padding="sm" className={`group ${isDisabled ? "opacity-50" : ""}`}>
       <div className="flex items-center justify-between">
@@ -1204,11 +1229,13 @@ function ComboCard({
           </div>
           <div className="min-w-0 flex-1">
             {/* Name + Strategy Badge + Copy */}
-            <div className="flex items-center gap-2">
-              <code className="text-sm font-medium font-mono truncate">{combo.name}</code>
+            <div className="flex items-center gap-2.5">
+              <code className="truncate font-mono text-base font-semibold leading-5">
+                {combo.name}
+              </code>
               <Tooltip content={strategyDescription}>
                 <span
-                  className={`text-[9px] uppercase font-semibold px-1.5 py-0.5 rounded-full ${getStrategyBadgeClass(
+                  className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase leading-none ${getStrategyBadgeClass(
                     strategy
                   )}`}
                 >
@@ -1217,10 +1244,10 @@ function ComboCard({
               </Tooltip>
               {hasProxy && (
                 <span
-                  className="text-[9px] uppercase font-semibold px-1.5 py-0.5 rounded-full bg-primary/15 text-primary flex items-center gap-0.5"
+                  className="flex items-center gap-0.5 rounded-full bg-primary/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase leading-none text-primary"
                   title={t("proxyConfigured")}
                 >
-                  <span className="material-symbols-outlined text-[11px]">vpn_lock</span>
+                  <span className="material-symbols-outlined text-[12px]">vpn_lock</span>
                   proxy
                 </span>
               )}
@@ -1239,7 +1266,7 @@ function ComboCard({
             </div>
 
             {/* Model tags with weights */}
-            <div className="flex items-center gap-1 mt-0.5 flex-wrap">
+            <div className="mt-1 flex items-center gap-1.5 flex-wrap">
               {models.length === 0 ? (
                 <span className="text-xs text-text-muted italic">{t("noModels")}</span>
               ) : (
@@ -1248,7 +1275,7 @@ function ComboCard({
                   return (
                     <code
                       key={index}
-                      className="text-[10px] font-mono bg-black/5 dark:bg-white/5 px-1.5 py-0.5 rounded text-text-muted"
+                      className="rounded bg-black/5 px-1.5 py-0.5 font-mono text-xs text-text-muted dark:bg-white/5"
                     >
                       {formatModelDisplay(model)}
                       {strategy === "weighted" && weight > 0 ? ` (${weight}%)` : ""}
@@ -1257,7 +1284,7 @@ function ComboCard({
                 })
               )}
               {models.length > 3 && (
-                <span className="text-[10px] text-text-muted">
+                <span className="text-xs text-text-muted">
                   {t("more", { count: models.length - 3 })}
                 </span>
               )}
@@ -1265,19 +1292,17 @@ function ComboCard({
 
             {/* Metrics row */}
             {metrics && (
-              <div className="flex items-center gap-3 mt-1">
-                <span className="text-[10px] text-text-muted">
+              <div className="mt-1.5 flex items-center gap-3">
+                <span className="text-xs text-text-muted">
                   <span className="text-emerald-500">{metrics.totalSuccesses}</span>/
                   {metrics.totalRequests} {t("reqs")}
                 </span>
-                <span className="text-[10px] text-text-muted">
+                <span className="text-xs text-text-muted">
                   {metrics.successRate}% {t("success")}
                 </span>
-                <span className="text-[10px] text-text-muted">~{metrics.avgLatencyMs}ms</span>
+                <span className="text-xs text-text-muted">~{metrics.avgLatencyMs}ms</span>
                 {metrics.fallbackRate > 0 && (
-                  <span className="text-[10px] text-amber-500">
-                    {metrics.fallbackRate}% fallback
-                  </span>
+                  <span className="text-xs text-amber-500">{metrics.fallbackRate}% fallback</span>
                 )}
               </div>
             )}
@@ -1285,7 +1310,7 @@ function ComboCard({
         </div>
 
         {/* Actions */}
-        <div className="flex items-center gap-1.5 shrink-0 ml-2">
+        <div className="ml-2 flex shrink-0 items-center gap-1.5">
           <Toggle
             size="sm"
             checked={!isDisabled}
@@ -1296,7 +1321,7 @@ function ComboCard({
             <button
               onClick={onTest}
               disabled={testing}
-              className="p-1.5 hover:bg-black/5 dark:hover:bg-white/5 rounded text-text-muted hover:text-emerald-500 transition-colors"
+              className="rounded p-1.5 text-text-muted transition-colors hover:bg-black/5 hover:text-emerald-500 dark:hover:bg-white/5"
               title={t("testCombo")}
             >
               <span
@@ -1307,28 +1332,28 @@ function ComboCard({
             </button>
             <button
               onClick={onDuplicate}
-              className="p-1.5 hover:bg-black/5 dark:hover:bg-white/5 rounded text-text-muted hover:text-primary transition-colors"
+              className="rounded p-1.5 text-text-muted transition-colors hover:bg-black/5 hover:text-primary dark:hover:bg-white/5"
               title={t("duplicate")}
             >
               <span className="material-symbols-outlined text-[16px]">content_copy</span>
             </button>
             <button
               onClick={onProxy}
-              className="p-1.5 hover:bg-black/5 dark:hover:bg-white/5 rounded text-text-muted hover:text-primary transition-colors"
+              className="rounded p-1.5 text-text-muted transition-colors hover:bg-black/5 hover:text-primary dark:hover:bg-white/5"
               title={t("proxyConfig")}
             >
               <span className="material-symbols-outlined text-[16px]">vpn_lock</span>
             </button>
             <button
               onClick={onEdit}
-              className="p-1.5 hover:bg-black/5 dark:hover:bg-white/5 rounded text-text-muted hover:text-primary transition-colors"
+              className="rounded p-1.5 text-text-muted transition-colors hover:bg-black/5 hover:text-primary dark:hover:bg-white/5"
               title={tc("edit")}
             >
               <span className="material-symbols-outlined text-[16px]">edit</span>
             </button>
             <button
               onClick={onDelete}
-              className="p-1.5 hover:bg-red-500/10 rounded text-red-500 transition-colors"
+              className="rounded p-1.5 text-red-500 transition-colors hover:bg-red-500/10"
               title={tc("delete")}
             >
               <span className="material-symbols-outlined text-[16px]">delete</span>
@@ -1343,8 +1368,10 @@ function ComboCard({
 // ─────────────────────────────────────────────
 // Test Results View
 // ─────────────────────────────────────────────
-function TestResultsView({ results }) {
+function TestResultsView({ results, providerNodes }) {
   const t = useTranslations("combos");
+
+  if (!results) return null;
 
   if (results.error) {
     return (
@@ -1355,63 +1382,71 @@ function TestResultsView({ results }) {
     );
   }
 
-  const protocolOption = getTestProtocolOption(t, results.protocol || "responses");
-
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex items-center gap-2 text-sm">
-        <span className="material-symbols-outlined text-primary text-[18px]">tune</span>
-        <span className="text-text-muted">
-          {getI18nOrFallback(t, "testProtocol.resultLabel", "Protocol")}:
-        </span>
-        <code className="text-xs bg-primary/10 text-primary px-1.5 py-0.5 rounded">
-          {protocolOption.label}
-        </code>
-      </div>
-      {results.resolvedBy && (
-        <div className="flex items-center gap-2 text-sm">
-          <span className="material-symbols-outlined text-emerald-500 text-[18px]">
-            check_circle
-          </span>
-          <span>
-            Resolved by:{" "}
-            <code className="text-xs bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 px-1.5 py-0.5 rounded">
-              {results.resolvedBy}
+      {results.results?.map((r, i) => {
+        const tone =
+          r.status === "ok"
+            ? "text-emerald-500"
+            : r.status === "error"
+              ? "text-red-500"
+              : r.status === "pending"
+                ? "text-primary"
+                : "text-text-muted";
+        const statusLabel = (
+          r.status === "pending"
+            ? getI18nOrFallback(t, "testing", "Testing...")
+            : r.status === "idle"
+              ? getI18nOrFallback(t, "testProtocol.ready", "Ready")
+              : r.status
+        ).toUpperCase();
+        const latencyLabel =
+          typeof r.latencyMs === "number"
+            ? `${r.latencyMs}ms`
+            : r.status === "pending"
+              ? "..."
+              : "-";
+        const iconName =
+          r.status === "ok"
+            ? "check_circle"
+            : r.status === "skipped"
+              ? "skip_next"
+              : r.status === "idle"
+                ? "radio_button_unchecked"
+                : "error";
+
+        return (
+          <div
+            key={r.index ?? i}
+            className="flex h-8 items-center gap-2 overflow-hidden rounded bg-black/[0.02] px-2 text-xs dark:bg-white/[0.02]"
+            title={r.error ? String(r.error) : undefined}
+          >
+            <span
+              className={`flex h-5 w-5 shrink-0 items-center justify-center ${tone}`}
+              aria-hidden="true"
+            >
+              {r.status === "pending" ? (
+                <span className="block h-3.5 w-3.5 animate-spin rounded-full border-[1.5px] border-current border-t-transparent" />
+              ) : (
+                <span className="material-symbols-outlined block text-[16px] leading-none">
+                  {iconName}
+                </span>
+              )}
+            </span>
+            <code className="block min-w-0 flex-1 basis-0 truncate font-mono leading-4">
+              {formatModelDisplay(r.model, providerNodes)}
             </code>
-          </span>
-        </div>
-      )}
-      {results.results?.map((r, i) => (
-        <div
-          key={i}
-          className="flex items-center gap-2 text-xs px-2 py-1.5 rounded bg-black/[0.02] dark:bg-white/[0.02]"
-        >
-          <span
-            className={`material-symbols-outlined text-[14px] ${
-              r.status === "ok"
-                ? "text-emerald-500"
-                : r.status === "skipped"
-                  ? "text-text-muted"
-                  : "text-red-500"
-            }`}
-          >
-            {r.status === "ok" ? "check_circle" : r.status === "skipped" ? "skip_next" : "error"}
-          </span>
-          <code className="font-mono flex-1">{r.model}</code>
-          {r.latencyMs !== undefined && <span className="text-text-muted">{r.latencyMs}ms</span>}
-          <span
-            className={`text-[10px] uppercase font-medium ${
-              r.status === "ok"
-                ? "text-emerald-500"
-                : r.status === "skipped"
-                  ? "text-text-muted"
-                  : "text-red-500"
-            }`}
-          >
-            {r.status}
-          </span>
-        </div>
-      ))}
+            <span className="shrink-0 w-[52px] whitespace-nowrap text-right leading-4 text-text-muted tabular-nums">
+              {latencyLabel}
+            </span>
+            <span
+              className={`shrink-0 w-[96px] whitespace-nowrap text-right text-[10px] font-medium uppercase leading-4 ${tone}`}
+            >
+              {statusLabel}
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
 }

@@ -74,9 +74,16 @@ test("combo test route probes codex models via /v1/responses", async () => {
     url: "http://localhost:20128/v1/responses",
     body: {
       model: "codex/gpt-5.4",
-      input: "Hi",
-      max_output_tokens: 5,
-      stream: false,
+      input: [
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "Hi" }],
+        },
+      ],
+      instructions: "Reply briefly.",
+      store: false,
+      stream: true,
     },
   });
 });
@@ -113,9 +120,16 @@ test("combo test route defaults to responses protocol when omitted", async () =>
     url: "http://localhost:20128/v1/responses",
     body: {
       model: "codex/gpt-5.4",
-      input: "Hi",
-      max_output_tokens: 5,
-      stream: false,
+      input: [
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "Hi" }],
+        },
+      ],
+      instructions: "Reply briefly.",
+      store: false,
+      stream: true,
     },
   });
 });

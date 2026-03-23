@@ -23,6 +23,7 @@ import {
   appendRequestLog,
   saveCallLog,
 } from "@/lib/usageDb";
+import { recordUsageCost } from "@/lib/usage/costTracking";
 import { getModelNormalizeToolCallId, getModelPreserveOpenAIDeveloperRole } from "@/lib/localDb";
 import { getExecutor } from "../executors/index.ts";
 import { translateNonStreamingResponse } from "./responseTranslator.ts";
@@ -78,6 +79,7 @@ export function shouldUseNativeCodexPassthrough({
  * @param {function} options.onDisconnect - Callback when client disconnects
  * @param {string} options.connectionId - Connection ID for usage tracking
  * @param {object} options.apiKeyInfo - API key metadata for usage attribution
+ * @param {number} options.streamIdleTimeoutMs - Optional per-request SSE idle timeout override
  */
 export async function handleChatCore({
   body,
@@ -92,6 +94,7 @@ export async function handleChatCore({
   apiKeyInfo = null,
   userAgent,
   comboName,
+  streamIdleTimeoutMs,
 }) {
   const { provider, model, extendedContext } = modelInfo;
   const startTime = Date.now();
@@ -832,6 +835,7 @@ export async function handleChatCore({
       }).catch((err) => {
         console.error("Failed to save usage stats:", err.message);
       });
+      await recordUsageCost(apiKeyInfo, provider, model, usage).catch(() => {});
     }
 
     // Translate response to client's expected format (usually OpenAI)
@@ -951,7 +955,8 @@ export async function handleChatCore({
       connectionId,
       body,
       onStreamComplete,
-      apiKeyInfo
+      apiKeyInfo,
+      streamIdleTimeoutMs
     );
   } else if (needsTranslation(targetFormat, sourceFormat)) {
     // Standard translation for other providers
@@ -966,7 +971,8 @@ export async function handleChatCore({
       connectionId,
       body,
       onStreamComplete,
-      apiKeyInfo
+      apiKeyInfo,
+      streamIdleTimeoutMs
     );
   } else {
     log?.debug?.("STREAM", `Standard passthrough mode`);
@@ -977,7 +983,8 @@ export async function handleChatCore({
       connectionId,
       body,
       onStreamComplete,
-      apiKeyInfo
+      apiKeyInfo,
+      streamIdleTimeoutMs
     );
   }
 
@@ -986,7 +993,6 @@ export async function handleChatCore({
   let finalStream;
   if (progressEnabled) {
     const progressTransform = createProgressTransform({ signal: streamController.signal });
-    // Chain: provider → transform → progress → client
     const transformedBody = pipeWithDisconnect(providerResponse, transformStream, streamController);
     finalStream = transformedBody.pipeThrough(progressTransform);
     responseHeaders["X-OmniRoute-Progress"] = "enabled";

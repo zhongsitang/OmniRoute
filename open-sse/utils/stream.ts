@@ -11,7 +11,10 @@ import {
   COLORS,
 } from "./usageTracking.ts";
 import { parseSSELine, hasValuableContent, fixInvalidId, formatSSE } from "./streamHelpers.ts";
-import { STREAM_IDLE_TIMEOUT_MS, HTTP_STATUS } from "../config/constants.ts";
+import {
+  STREAM_IDLE_TIMEOUT_MS as DEFAULT_STREAM_IDLE_TIMEOUT_MS,
+  HTTP_STATUS,
+} from "../config/constants.ts";
 import {
   sanitizeStreamingChunk,
   extractThinkingFromContent,
@@ -45,6 +48,7 @@ type StreamOptions = {
   connectionId?: string | null;
   apiKeyInfo?: unknown;
   body?: unknown;
+  idleTimeoutMs?: number | null;
   onComplete?: ((payload: StreamCompletePayload) => void) | null;
 };
 
@@ -75,6 +79,19 @@ const STREAM_MODE = {
   PASSTHROUGH: "passthrough", // No translation, normalize output, extract usage
 };
 
+function resolveIdleTimeoutMs(value: unknown) {
+  if (value === null || value === undefined || value === "") {
+    return DEFAULT_STREAM_IDLE_TIMEOUT_MS;
+  }
+
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return DEFAULT_STREAM_IDLE_TIMEOUT_MS;
+  }
+
+  return Math.trunc(parsed);
+}
+
 /**
  * Create unified SSE transform stream with idle timeout protection.
  * If the upstream provider stops sending data for STREAM_IDLE_TIMEOUT_MS,
@@ -104,11 +121,13 @@ export function createSSEStream(options: StreamOptions = {}) {
     connectionId = null,
     apiKeyInfo = null,
     body = null,
+    idleTimeoutMs: configuredIdleTimeoutMs = null,
     onComplete = null,
   } = options;
 
   let buffer = "";
   let usage = null;
+  const idleTimeoutMs = resolveIdleTimeoutMs(configuredIdleTimeoutMs);
 
   // State for translate mode (accumulatedContent for call log response body)
   const state: TranslateState | null =
@@ -142,13 +161,13 @@ export function createSSEStream(options: StreamOptions = {}) {
     {
       start(controller) {
         // Start idle watchdog — checks every 10s if provider has stopped sending
-        if (STREAM_IDLE_TIMEOUT_MS > 0) {
+        if (idleTimeoutMs > 0) {
           idleTimer = setInterval(() => {
-            if (!streamTimedOut && Date.now() - lastChunkTime > STREAM_IDLE_TIMEOUT_MS) {
+            if (!streamTimedOut && Date.now() - lastChunkTime > idleTimeoutMs) {
               streamTimedOut = true;
               clearInterval(idleTimer);
               idleTimer = null;
-              const timeoutMsg = `[STREAM] Idle timeout: no data from ${provider || "provider"} for ${STREAM_IDLE_TIMEOUT_MS}ms (model: ${model || "unknown"})`;
+              const timeoutMsg = `[STREAM] Idle timeout: no data from ${provider || "provider"} for ${idleTimeoutMs}ms (model: ${model || "unknown"})`;
               console.warn(timeoutMsg);
               trackPendingRequest(model, provider, connectionId, false);
               appendRequestLog({
@@ -663,7 +682,8 @@ export function createSSETransformStreamWithLogger(
   connectionId: string | null = null,
   body: unknown = null,
   onComplete: ((payload: StreamCompletePayload) => void) | null = null,
-  apiKeyInfo: unknown = null
+  apiKeyInfo: unknown = null,
+  idleTimeoutMs: number | null = null
 ) {
   return createSSEStream({
     mode: STREAM_MODE.TRANSLATE,
@@ -676,6 +696,7 @@ export function createSSETransformStreamWithLogger(
     connectionId,
     apiKeyInfo,
     body,
+    idleTimeoutMs,
     onComplete,
   });
 }
@@ -687,7 +708,8 @@ export function createPassthroughStreamWithLogger(
   connectionId: string | null = null,
   body: unknown = null,
   onComplete: ((payload: StreamCompletePayload) => void) | null = null,
-  apiKeyInfo: unknown = null
+  apiKeyInfo: unknown = null,
+  idleTimeoutMs: number | null = null
 ) {
   return createSSEStream({
     mode: STREAM_MODE.PASSTHROUGH,
@@ -697,6 +719,7 @@ export function createPassthroughStreamWithLogger(
     connectionId,
     apiKeyInfo,
     body,
+    idleTimeoutMs,
     onComplete,
   });
 }

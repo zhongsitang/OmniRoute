@@ -308,6 +308,9 @@ export async function getProviderCredentials(
       if (allConnections.length > 0) {
         const earliest = getEarliestRateLimitedUntil(allConnections);
         if (earliest) {
+          const rateLimitedConnectionIds = allConnections
+            .filter((conn) => conn.rateLimitedUntil && new Date(conn.rateLimitedUntil).getTime() > Date.now())
+            .map((conn) => conn.id);
           log.warn(
             "AUTH",
             `${provider} | all ${allConnections.length} accounts rate limited (${formatRetryAfter(earliest)})`
@@ -316,6 +319,7 @@ export async function getProviderCredentials(
             allRateLimited: true,
             retryAfter: earliest,
             retryAfterHuman: formatRetryAfter(earliest),
+            rateLimitedConnectionIds,
           };
         }
         log.warn("AUTH", `${provider} | ${allConnections.length} accounts found but none active`);
@@ -373,6 +377,7 @@ export async function getProviderCredentials(
           retryAfterHuman: formatRetryAfter(earliest),
           lastError: earliestConn?.lastError || null,
           lastErrorCode: earliestConn?.errorCode || null,
+          rateLimitedConnectionIds: rateLimitedConns.map((conn) => conn.id),
         };
       }
       log.warn("AUTH", `${provider} | all ${connections.length} accounts unavailable`);
@@ -423,6 +428,7 @@ export async function getProviderCredentials(
         retryAfterHuman: formatRetryAfter(retryAfter),
         lastError: `All ${provider} accounts reached configured quota threshold`,
         lastErrorCode: 429,
+        rateLimitedConnectionIds: blockedByPolicy.map((entry) => entry.id),
       };
     }
 

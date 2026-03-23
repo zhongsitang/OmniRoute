@@ -39,7 +39,6 @@ import {
 import { markAccountExhaustedFrom429, setQuotaCacheFromUsage } from "../../domain/quotaCache";
 import { RequestTelemetry, recordTelemetry } from "../../shared/utils/requestTelemetry";
 import { generateRequestId } from "../../shared/utils/requestId";
-import { recordCost } from "../../domain/costRules";
 import { logAuditEvent } from "../../lib/compliance/index";
 import { enforceApiKeyPolicy } from "../../shared/utils/apiKeyPolicy";
 import {
@@ -54,7 +53,18 @@ import { getUsageForProvider } from "@omniroute/open-sse/services/usage.ts";
 import {
   checkFallbackError,
   isQuotaExhaustionFailure,
+  lockModel,
 } from "@omniroute/open-sse/services/accountFallback.ts";
+
+function getRuntimeStreamIdleTimeoutMs(settings: any) {
+  const raw = settings?.streamIdleTimeoutMs;
+  if (raw === null || raw === undefined || raw === "") return undefined;
+
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) return undefined;
+
+  return Math.trunc(parsed);
+}
 
 /**
  * Handle chat completion request
@@ -251,6 +261,7 @@ export async function handleChat(request: any, clientRawRequest: any = null) {
       handleSingleModel: (b: any, m: string) =>
         handleSingleModelChat(b, m, clientRawRequest, request, combo.name, apiKeyInfo, telemetry, {
           liveProbe: isLiveProbe,
+          settings,
         }),
       isModelAvailable: checkModelAvailable,
       log,
@@ -265,6 +276,7 @@ export async function handleChat(request: any, clientRawRequest: any = null) {
   telemetry.endPhase();
 
   // Single model request
+  const settings = await getSettings().catch(() => ({}));
   const response = await handleSingleModelChat(
     body,
     modelStr,
@@ -273,7 +285,7 @@ export async function handleChat(request: any, clientRawRequest: any = null) {
     comboProbeName,
     apiKeyInfo,
     telemetry,
-    { liveProbe: isLiveProbe }
+    { liveProbe: isLiveProbe, settings }
   );
   recordTelemetry(telemetry);
   return response;
@@ -294,8 +306,10 @@ async function handleSingleModelChat(
   comboName: string | null = null,
   apiKeyInfo: any = null,
   telemetry: any = null,
-  runtimeOptions: { emergencyFallbackTried?: boolean; liveProbe?: boolean } = {}
+  runtimeOptions: { emergencyFallbackTried?: boolean; liveProbe?: boolean; settings?: any } = {}
 ) {
+  const settings = runtimeOptions.settings ?? (await getSettings().catch(() => ({})));
+
   // 1. Resolve model → provider/model
   const resolved = await resolveModelOrError(modelStr, body);
   if (resolved.error) return resolved.error;
@@ -329,6 +343,9 @@ async function handleSingleModelChat(
     );
 
     if (!credentials || credentials.allRateLimited) {
+      if (!runtimeOptions.liveProbe) {
+        registerPreflightQuotaModelLockouts(provider, model, credentials, lastError, lastStatus);
+      }
       if (!runtimeOptions.liveProbe && (lastStatus === 429 || lastStatus === 503)) {
         setModelUnavailable(provider, model, 60000, `HTTP ${lastStatus}`);
         log.info(
@@ -370,6 +387,7 @@ async function handleSingleModelChat(
       comboName,
       extendedContext,
       skipBreaker: runtimeOptions.liveProbe,
+      streamIdleTimeoutMs: getRuntimeStreamIdleTimeoutMs(settings),
     });
     if (telemetry) telemetry.endPhase();
 
@@ -392,7 +410,6 @@ async function handleSingleModelChat(
 
     if (result.success) {
       clearModelUnavailability(provider, model);
-      recordCostIfNeeded(apiKeyInfo, result);
       if (telemetry) telemetry.startPhase("finalize");
       if (telemetry) telemetry.endPhase();
       return result.response;
@@ -439,7 +456,7 @@ async function handleSingleModelChat(
             comboName,
             apiKeyInfo,
             telemetry,
-            { ...runtimeOptions, emergencyFallbackTried: true }
+            { ...runtimeOptions, settings, emergencyFallbackTried: true }
           );
         }
       }
@@ -598,6 +615,7 @@ async function executeChatWithBreaker({
   comboName,
   extendedContext,
   skipBreaker = false,
+  streamIdleTimeoutMs,
 }: any): Promise<{ result: any; tlsFingerprintUsed: boolean }> {
   let tlsFingerprintUsed = false;
 
@@ -614,6 +632,7 @@ async function executeChatWithBreaker({
           apiKeyInfo,
           userAgent,
           comboName,
+          streamIdleTimeoutMs,
           onCredentialsRefreshed: async (newCreds: any) => {
             await updateProviderCredentials(credentials.connectionId, {
               accessToken: newCreds.accessToken,
@@ -665,18 +684,6 @@ async function executeChatWithBreaker({
   }
 }
 
-/**
- * Record cost if API key has budget tracking enabled.
- */
-function recordCostIfNeeded(apiKeyInfo: any, result: any) {
-  if (!apiKeyInfo?.id) return;
-  try {
-    const usage = result.usage || {};
-    const estimatedCost = ((usage.prompt_tokens || 0) + (usage.completion_tokens || 0)) * 0.000001;
-    if (estimatedCost > 0) recordCost(apiKeyInfo.id, estimatedCost);
-  } catch {}
-}
-
 // ──── Extracted helpers (T-28) ────
 
 function handleNoCredentials(
@@ -708,6 +715,38 @@ function handleNoCredentials(
     lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE,
     lastError || "All accounts unavailable"
   );
+}
+
+function registerPreflightQuotaModelLockouts(
+  provider: string,
+  model: string,
+  credentials: any,
+  lastError: string | null,
+  lastStatus: number | null
+) {
+  if (!credentials?.allRateLimited) return;
+
+  const status = lastStatus || Number(credentials.lastErrorCode) || 0;
+  const errorMsg = lastError || credentials.lastError || "";
+  if (!isQuotaExhaustionFailure(status, errorMsg)) return;
+
+  const retryAfter =
+    typeof credentials.retryAfter === "string" ? new Date(credentials.retryAfter).getTime() : 0;
+  const remainingMs = retryAfter - Date.now();
+  if (!Number.isFinite(remainingMs) || remainingMs <= 0) return;
+
+  const connectionIds = Array.isArray(credentials.rateLimitedConnectionIds)
+    ? credentials.rateLimitedConnectionIds.filter(
+        (connectionId: unknown): connectionId is string =>
+          typeof connectionId === "string" && connectionId.trim().length > 0
+      )
+    : [];
+  if (connectionIds.length === 0) return;
+
+  const reason = checkFallbackError(status, errorMsg, 0, model, provider).reason || "unknown";
+  for (const connectionId of connectionIds) {
+    lockModel(provider, connectionId, model, reason, remainingMs);
+  }
 }
 
 async function safeResolveProxy(connectionId: string) {

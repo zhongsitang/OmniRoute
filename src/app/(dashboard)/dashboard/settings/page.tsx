@@ -9,6 +9,7 @@ import SystemStorageTab from "./components/SystemStorageTab";
 import SecurityTab from "./components/SecurityTab";
 import RoutingTab from "./components/RoutingTab";
 import ComboDefaultsTab from "./components/ComboDefaultsTab";
+import StreamTimeoutsTab from "./components/StreamTimeoutsTab";
 import ProxyTab from "./components/ProxyTab";
 import AppearanceTab from "./components/AppearanceTab";
 import ThinkingBudgetTab from "./components/ThinkingBudgetTab";
@@ -98,6 +99,7 @@ export default function SettingsPage() {
             <div className="flex flex-col gap-6">
               <RoutingTab />
               <ComboDefaultsTab />
+              <StreamTimeoutsTab />
               <ModelAliasesTab />
               <BackgroundDegradationTab />
             </div>

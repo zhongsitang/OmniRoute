@@ -13,6 +13,7 @@ export interface Settings {
     | "cost-optimized"
     | "strict-random";
   stickyRoundRobinLimit: number;
+  streamIdleTimeoutMs?: number;
   jwtSecret?: string;
 }
 

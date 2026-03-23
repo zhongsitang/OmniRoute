@@ -6,8 +6,14 @@ import Modal from "./Modal";
 import Button from "./Button";
 import Input from "./Input";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
-
-const GOOGLE_OAUTH_PROVIDERS = new Set(["antigravity", "gemini-cli"]);
+import {
+  GOOGLE_OAUTH_PROVIDERS,
+  isLoopbackRedirectUri,
+  isTrueLocalhostHost,
+  resolveOAuthRedirectUri,
+  shouldUseLocalCodexCallbackServer,
+  shouldUseManualOAuthFallback,
+} from "@/shared/utils/oauthRedirect";
 
 type OAuthModalProps = {
   isOpen: boolean;
@@ -20,8 +26,8 @@ type OAuthModalProps = {
 
 /**
  * OAuth Modal Component
- * - Localhost: Auto callback via popup message
- * - Remote: Manual paste callback URL
+ * - Same-origin callbacks: Auto callback via popup message
+ * - Cross-origin/localhost callbacks: Manual paste fallback
  */
 export default function OAuthModal({
   isOpen,
@@ -42,29 +48,26 @@ export default function OAuthModal({
   const { copied, copy } = useCopyToClipboard();
 
   // State for client-only values to avoid hydration mismatch
-  const [isLocalhost, setIsLocalhost] = useState(false);
+  const [clientReady, setClientReady] = useState(false);
+  const [clientHostname, setClientHostname] = useState("");
+  const [clientOrigin, setClientOrigin] = useState("");
+  const [clientPort, setClientPort] = useState("");
+  const [clientProtocol, setClientProtocol] = useState("http:");
   const [placeholderUrl, setPlaceholderUrl] = useState("/callback?code=...");
   const callbackProcessedRef = useRef(false);
   const flowStartedRef = useRef(false);
 
-  // Detect if running on true localhost vs LAN IP (client-side only)
-  // - True localhost (127.0.0.1/localhost): popup auto-callback works
-  // - LAN IPs (192.168.x, 10.x, 172.x): redirect URI uses localhost but callback
-  //   won't resolve back to the VPS, so use manual paste mode
-  const [isTrueLocalhost, setIsTrueLocalhost] = useState(false);
+  // Detect whether the browser is running on the same machine as OmniRoute.
+  // Only true localhost can safely use a browser-local callback like localhost:1455.
   useEffect(() => {
     if (typeof window !== "undefined") {
-      const hostname = window.location.hostname;
-      const isLocal =
-        hostname === "localhost" ||
-        hostname === "127.0.0.1" ||
-        hostname.startsWith("192.168.") ||
-        hostname.startsWith("10.") ||
-        /^172\.(1[6-9]|2\d|3[01])\./.test(hostname);
-      const isTrulyLocal = hostname === "localhost" || hostname === "127.0.0.1";
-      setIsLocalhost(isLocal);
-      setIsTrueLocalhost(isTrulyLocal);
+      const { hostname, origin, port, protocol } = window.location;
+      setClientHostname(hostname);
+      setClientOrigin(origin);
+      setClientPort(port);
+      setClientProtocol(protocol);
       setPlaceholderUrl(`${window.location.origin}/callback?code=...`);
+      setClientReady(true);
     }
   }, []);
 
@@ -170,7 +173,7 @@ export default function OAuthModal({
 
   // Start OAuth flow
   const startOAuthFlow = useCallback(async () => {
-    if (!provider) return;
+    if (!provider || !clientReady) return;
     try {
       setError(null);
 
@@ -211,85 +214,72 @@ export default function OAuthModal({
         return;
       }
 
-      // Codex: on localhost use callback server on port 1455,
-      // on remote use standard auth code flow (callback server is unreachable)
-      if (provider === "codex") {
-        if (isLocalhost) {
-          // Localhost: use callback server on port 1455 + polling
-          try {
-            const serverRes = await fetch(`/api/oauth/codex/start-callback-server`);
-            const serverData = await serverRes.json();
-            if (!serverRes.ok) throw new Error(serverData.error);
+      // Codex: only a true localhost browser can use the auto callback server.
+      // Remote/LAN deployments must keep the localhost redirect URI but rely
+      // on the manual paste fallback because the browser callback lands on the
+      // user's own machine, not the OmniRoute server.
+      if (shouldUseLocalCodexCallbackServer(provider, clientHostname)) {
+        // Localhost: use callback server on port 1455 + polling
+        try {
+          const serverRes = await fetch(`/api/oauth/codex/start-callback-server`);
+          const serverData = await serverRes.json();
+          if (!serverRes.ok) throw new Error(serverData.error);
 
-            setAuthData({ ...serverData, redirectUri: serverData.redirectUri });
-            setStep("waiting");
-            window.open(serverData.authUrl, "oauth_auth");
+          setAuthData({ ...serverData, redirectUri: serverData.redirectUri });
+          setStep("waiting");
+          window.open(serverData.authUrl, "oauth_auth");
 
-            setPolling(true);
-            const maxAttempts = 150;
-            for (let i = 0; i < maxAttempts; i++) {
-              await new Promise((r) => setTimeout(r, 2000));
+          setPolling(true);
+          const maxAttempts = 150;
+          for (let i = 0; i < maxAttempts; i++) {
+            await new Promise((r) => setTimeout(r, 2000));
 
-              const pollRes = await fetch(`/api/oauth/codex/poll-callback`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({}),
-              });
-              const pollData = await pollRes.json();
+            const pollRes = await fetch(`/api/oauth/codex/poll-callback`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({}),
+            });
+            const pollData = await pollRes.json();
 
-              if (pollData.success) {
-                setStep("success");
-                setPolling(false);
-                onSuccess?.();
-                return;
-              }
-
-              if (pollData.error && !pollData.pending) {
-                throw new Error(pollData.errorDescription || pollData.error);
-              }
+            if (pollData.success) {
+              setStep("success");
+              setPolling(false);
+              onSuccess?.();
+              return;
             }
 
-            setPolling(false);
-            throw new Error("Authorization timeout");
-          } catch (codexErr) {
-            setPolling(false);
-            setStep("input");
-            setError(codexErr.message + " — You can paste the callback URL manually below.");
+            if (pollData.error && !pollData.pending) {
+              throw new Error(pollData.errorDescription || pollData.error);
+            }
           }
-          return;
+
+          setPolling(false);
+          throw new Error("Authorization timeout");
+        } catch (codexErr) {
+          setPolling(false);
+          setStep("input");
+          setError(codexErr.message + " — You can paste the callback URL manually below.");
         }
-        // Remote: fall through to standard auth code flow below
+        return;
       }
 
       // Authorization code flow
       // Redirect URI strategy:
-      // - Codex/OpenAI: always port 1455 (registered in OAuth app)
+      // - Codex/OpenAI: always use localhost:1455 like the native CLI
+      //   (remote hosts will switch to manual URL paste mode)
       // - Google OAuth providers (antigravity, gemini-cli): always localhost, regardless of
       //   where OmniRoute is hosted — Google only accepts pre-registered localhost URIs with
       //   the built-in credentials. Remote users must configure their own credentials.
       // - Other providers on remote: use actual origin (supports PUBLIC_URL env var)
-      // - Localhost: use localhost:port
-      let redirectUri: string;
-      if (provider === "codex" || provider === "openai") {
-        redirectUri = "http://localhost:1455/auth/callback";
-      } else if (GOOGLE_OAUTH_PROVIDERS.has(provider)) {
-        // Google OAuth built-in credentials only accept localhost redirect URIs.
-        // Even in remote deployments we use localhost — user copies the callback URL manually.
-        const port = window.location.port || "20128";
-        redirectUri = `http://localhost:${port}/callback`;
-      } else if (!isLocalhost) {
-        // Behind reverse proxy: use actual origin (e.g., https://omniroute.example.com/callback)
-        // Supports PUBLIC_URL env var override, or falls back to window.location.origin.
-        const publicUrl = process.env.NEXT_PUBLIC_BASE_URL;
-        const origin =
-          publicUrl && publicUrl !== "http://localhost:20128"
-            ? publicUrl.replace(/\/$/, "")
-            : window.location.origin;
-        redirectUri = `${origin}/callback`;
-      } else {
-        const port = window.location.port || (window.location.protocol === "https:" ? "443" : "80");
-        redirectUri = `http://localhost:${port}/callback`;
-      }
+      // - Other providers on true localhost: use localhost:port
+      const redirectUri = resolveOAuthRedirectUri({
+        provider,
+        hostname: clientHostname,
+        origin: clientOrigin,
+        protocol: clientProtocol,
+        port: clientPort,
+        publicBaseUrl: process.env.NEXT_PUBLIC_BASE_URL,
+      });
 
       const res = await fetch(
         `/api/oauth/${provider}/authorize?redirect_uri=${encodeURIComponent(redirectUri)}`
@@ -306,12 +296,13 @@ export default function OAuthModal({
 
       setAuthData({ ...data, redirectUri });
 
-      // For non-true-localhost (LAN IPs, remote): use manual input mode (user pastes callback URL)
-      if (!isTrueLocalhost) {
+      // Manual input is only required when the provider redirects to a different origin
+      // (for example Google's built-in localhost callback on a remote server).
+      if (shouldUseManualOAuthFallback(redirectUri, clientOrigin)) {
         setStep("input");
         window.open(data.authUrl, "oauth_auth");
       } else {
-        // Localhost: Open popup and wait for message
+        // Same-origin callback: open popup and wait for message
         setStep("waiting");
         popupRef.current = window.open(data.authUrl, "oauth_popup", "width=600,height=700");
 
@@ -324,7 +315,16 @@ export default function OAuthModal({
       setError(err.message);
       setStep("error");
     }
-  }, [provider, isLocalhost, isTrueLocalhost, startPolling, onSuccess]);
+  }, [
+    clientHostname,
+    clientOrigin,
+    clientPort,
+    clientProtocol,
+    clientReady,
+    provider,
+    startPolling,
+    onSuccess,
+  ]);
 
   // Reset guard when modal closes
   useEffect(() => {
@@ -335,7 +335,7 @@ export default function OAuthModal({
 
   // Reset state and start OAuth when modal opens
   useEffect(() => {
-    if (isOpen && provider) {
+    if (isOpen && provider && clientReady) {
       if (flowStartedRef.current) return; // Already started, prevent duplicate
       flowStartedRef.current = true;
       setAuthData(null);
@@ -347,7 +347,7 @@ export default function OAuthModal({
       // Auto start OAuth
       startOAuthFlow();
     }
-  }, [isOpen, provider, startOAuthFlow]);
+  }, [clientReady, isOpen, provider, startOAuthFlow]);
 
   // Listen for OAuth callback via multiple methods
   useEffect(() => {
@@ -475,7 +475,6 @@ export default function OAuthModal({
       clearInterval(popupClosedInterval);
       clearTimeout(safetyTimeout);
     };
-     
   }, [step, isDeviceCode]);
 
   // Handle manual URL input
@@ -503,6 +502,13 @@ export default function OAuthModal({
   };
 
   if (!provider || !providerInfo) return null;
+
+  const requiresManualCallback =
+    !!authData?.redirectUri && shouldUseManualOAuthFallback(authData.redirectUri, clientOrigin);
+  const manualCallbackUsesLoopback = isLoopbackRedirectUri(authData?.redirectUri);
+  const callbackPlaceholder = authData?.redirectUri
+    ? `${authData.redirectUri}?code=...`
+    : placeholderUrl;
 
   return (
     <Modal isOpen={isOpen} title={`Connect ${providerInfo.name}`} onClose={onClose} size="lg">
@@ -577,36 +583,41 @@ export default function OAuthModal({
           <>
             <div className="space-y-4">
               {/* Remote/LAN server info for Google OAuth providers */}
-              {!isTrueLocalhost && GOOGLE_OAUTH_PROVIDERS.has(provider) && (
-                <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200">
-                  <span className="material-symbols-outlined text-sm align-middle mr-1">
-                    warning
-                  </span>
-                  <strong>Remote access + Google OAuth:</strong> The default credentials only accept
-                  redirects to <code>localhost</code>. After authorizing, your browser will try to
-                  open <code>localhost</code> — copy that full URL and paste it below. For fully
-                  remote use without this manual step,{" "}
-                  <a
-                    href="https://github.com/diegosouzapw/OmniRoute#oauth-on-a-remote-server"
-                    target="_blank"
-                    rel="noreferrer"
-                    className="underline"
-                  >
-                    configure your own OAuth credentials
-                  </a>
-                  .
-                </div>
-              )}
+              {requiresManualCallback &&
+                manualCallbackUsesLoopback &&
+                GOOGLE_OAUTH_PROVIDERS.has(provider) && (
+                  <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200">
+                    <span className="material-symbols-outlined text-sm align-middle mr-1">
+                      warning
+                    </span>
+                    <strong>Remote access + Google OAuth:</strong> The default credentials only
+                    accept redirects to <code>localhost</code>. After authorizing, your browser will
+                    try to open <code>localhost</code> — copy that full URL and paste it below. For
+                    fully remote use without this manual step,{" "}
+                    <a
+                      href="https://github.com/diegosouzapw/OmniRoute#oauth-on-a-remote-server"
+                      target="_blank"
+                      rel="noreferrer"
+                      className="underline"
+                    >
+                      configure your own OAuth credentials
+                    </a>
+                    .
+                  </div>
+                )}
               {/* Generic remote info for other providers */}
-              {!isTrueLocalhost && !GOOGLE_OAUTH_PROVIDERS.has(provider) && (
-                <div className="rounded-lg border border-blue-500/30 bg-blue-500/10 p-3 text-xs text-blue-200">
-                  <span className="material-symbols-outlined text-sm align-middle mr-1">info</span>
-                  <strong>Remote access:</strong> Since you&apos;re accessing OmniRoute remotely,
-                  after authorizing you&apos;ll see an error page (localhost not found). That&apos;s
-                  expected — just copy the full URL from your browser&apos;s address bar and paste
-                  it below.
-                </div>
-              )}
+              {requiresManualCallback &&
+                (!manualCallbackUsesLoopback || !GOOGLE_OAUTH_PROVIDERS.has(provider)) && (
+                  <div className="rounded-lg border border-blue-500/30 bg-blue-500/10 p-3 text-xs text-blue-200">
+                    <span className="material-symbols-outlined text-sm align-middle mr-1">
+                      info
+                    </span>
+                    <strong>Manual callback:</strong> This provider redirects to a local callback
+                    address. After authorization, your browser may show a failed{" "}
+                    <code>localhost</code> page; copy the full URL from the address bar and paste it
+                    below.
+                  </div>
+                )}
               <div>
                 <p className="text-sm font-medium mb-2">Step 1: Open this URL in your browser</p>
                 <div className="flex gap-2">
@@ -633,7 +644,7 @@ export default function OAuthModal({
                 <Input
                   value={callbackUrl}
                   onChange={(e) => setCallbackUrl(e.target.value)}
-                  placeholder={placeholderUrl}
+                  placeholder={callbackPlaceholder}
                   className="font-mono text-xs"
                 />
               </div>

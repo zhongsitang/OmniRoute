@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
 import { KiroService } from "@/lib/oauth/services/kiro";
 import { createProviderConnection, isCloudEnabled } from "@/models";
+import { getProxyConfig } from "@/lib/localDb";
 import { getConsistentMachineId } from "@/shared/utils/machineId";
 import { syncToCloud } from "@/lib/cloudSync";
+import { runWithProxyContext } from "@omniroute/open-sse/utils/proxyFetch.ts";
 import { kiroSocialExchangeSchema } from "@/shared/validation/schemas";
 import { isValidationFailure, validateBody } from "@/shared/validation/helpers";
 
@@ -35,9 +37,13 @@ export async function POST(request: Request) {
     const { code, codeVerifier, provider } = validation.data;
 
     const kiroService = new KiroService();
+    const proxyConfig = await getProxyConfig();
+    const proxy = proxyConfig.providers?.kiro || proxyConfig.global || null;
 
     // Exchange code for tokens (redirect_uri handled internally)
-    const tokenData = await kiroService.exchangeSocialCode(code, codeVerifier);
+    const tokenData = await runWithProxyContext(proxy, () =>
+      kiroService.exchangeSocialCode(code, codeVerifier)
+    );
 
     // Extract email from JWT if available
     const email = kiroService.extractEmailFromJWT(tokenData.accessToken);

@@ -42,6 +42,27 @@ function parseJsonString(value: unknown): unknown | null {
   }
 }
 
+function getPromptInputTokens(tokens: any): number {
+  if (!tokens || typeof tokens !== "object") return 0;
+
+  if (tokens.input !== undefined) return toNumber(tokens.input);
+
+  const promptTokens = toNumber(tokens.prompt_tokens ?? tokens.input_tokens);
+  const promptDetails = asRecord(tokens.prompt_tokens_details ?? tokens.input_tokens_details);
+  const cacheRead = toNumber(
+    tokens.cache_read_input_tokens ?? tokens.cached_tokens ?? promptDetails.cached_tokens
+  );
+  const cacheCreation = toNumber(
+    tokens.cache_creation_input_tokens ?? promptDetails.cache_creation_tokens
+  );
+  const promptIncludesCache =
+    tokens.cached_tokens !== undefined ||
+    promptDetails.cached_tokens !== undefined ||
+    promptDetails.cache_creation_tokens !== undefined;
+
+  return promptIncludesCache ? promptTokens : promptTokens + cacheRead + cacheCreation;
+}
+
 function hasTruncatedFlag(value: unknown): boolean {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   return (value as Record<string, unknown>)._truncated === true;
@@ -184,12 +205,13 @@ export async function saveCallLog(entry: any) {
       account,
       connectionId: entry.connectionId || null,
       duration: entry.duration || 0,
-      tokensIn: toNumber(
-        (entry.tokens?.prompt_tokens ?? entry.tokens?.input_tokens ?? 0) +
-          (entry.tokens?.cache_read_input_tokens ?? entry.tokens?.cached_tokens ?? 0) +
-          (entry.tokens?.cache_creation_input_tokens ?? 0)
+      tokensIn: getPromptInputTokens(entry.tokens),
+      tokensOut: toNumber(
+        entry.tokens?.output ??
+          entry.tokens?.completion_tokens ??
+          entry.tokens?.output_tokens ??
+          entry.tokens?.out
       ),
-      tokensOut: toNumber(entry.tokens?.completion_tokens ?? entry.tokens?.output_tokens ?? 0),
       requestType: entry.requestType || null,
       sourceFormat: entry.sourceFormat || null,
       targetFormat: entry.targetFormat || null,

@@ -124,6 +124,15 @@ export function translateNonStreamingResponse(
     if (Object.keys(usage).length > 0) {
       const inputTokens = toNumber(usage.input_tokens, 0);
       const outputTokens = toNumber(usage.output_tokens, 0);
+      const inputTokenDetails = toRecord(usage.input_tokens_details);
+      const cacheReadTokens = toNumber(
+        usage.cache_read_input_tokens ?? inputTokenDetails.cached_tokens,
+        0
+      );
+      const cacheCreationTokens = toNumber(
+        usage.cache_creation_input_tokens ?? inputTokenDetails.cache_creation_tokens,
+        0
+      );
       result.usage = {
         prompt_tokens: inputTokens,
         completion_tokens: outputTokens,
@@ -135,17 +144,14 @@ export function translateNonStreamingResponse(
           reasoning_tokens: toNumber(usage.reasoning_tokens, 0),
         };
       }
-      if (
-        toNumber(usage.cache_read_input_tokens, 0) > 0 ||
-        toNumber(usage.cache_creation_input_tokens, 0) > 0
-      ) {
+      if (cacheReadTokens > 0 || cacheCreationTokens > 0) {
         (result.usage as JsonRecord).prompt_tokens_details = {};
         const promptDetails = (result.usage as JsonRecord).prompt_tokens_details as JsonRecord;
-        if (toNumber(usage.cache_read_input_tokens, 0) > 0) {
-          promptDetails.cached_tokens = toNumber(usage.cache_read_input_tokens, 0);
+        if (cacheReadTokens > 0) {
+          promptDetails.cached_tokens = cacheReadTokens;
         }
-        if (toNumber(usage.cache_creation_input_tokens, 0) > 0) {
-          promptDetails.cache_creation_tokens = toNumber(usage.cache_creation_input_tokens, 0);
+        if (cacheCreationTokens > 0) {
+          promptDetails.cache_creation_tokens = cacheCreationTokens;
         }
       }
     }

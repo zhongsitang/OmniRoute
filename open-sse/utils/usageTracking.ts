@@ -3,6 +3,7 @@
  */
 
 import { saveRequestUsage, appendRequestLog } from "@/lib/usageDb";
+import { recordUsageCost } from "@/lib/usage/costTracking";
 import { FORMATS } from "../translator/formats.ts";
 
 // ANSI color codes
@@ -154,6 +155,56 @@ export function normalizeUsage(usage) {
   return normalized;
 }
 
+function getCacheMetrics(usage) {
+  if (!usage || typeof usage !== "object") {
+    return { cacheRead: 0, cacheCreation: 0, promptIncludesCache: false };
+  }
+
+  const promptDetails =
+    usage.prompt_tokens_details && typeof usage.prompt_tokens_details === "object"
+      ? usage.prompt_tokens_details
+      : usage.input_tokens_details && typeof usage.input_tokens_details === "object"
+        ? usage.input_tokens_details
+        : null;
+
+  const cacheRead = Number(
+    usage.cache_read_input_tokens ??
+      usage.cached_tokens ??
+      promptDetails?.cached_tokens ??
+      0
+  );
+  const cacheCreation = Number(
+    usage.cache_creation_input_tokens ??
+      promptDetails?.cache_creation_tokens ??
+      0
+  );
+
+  return {
+    cacheRead: Number.isFinite(cacheRead) ? cacheRead : 0,
+    cacheCreation: Number.isFinite(cacheCreation) ? cacheCreation : 0,
+    promptIncludesCache:
+      usage.cached_tokens !== undefined ||
+      Boolean(
+        promptDetails &&
+          (promptDetails.cached_tokens !== undefined ||
+            promptDetails.cache_creation_tokens !== undefined)
+      ),
+  };
+}
+
+function getTotalInputTokens(usage) {
+  if (!usage || typeof usage !== "object") return 0;
+
+  const directInput = Number(usage.input ?? Number.NaN);
+  if (Number.isFinite(directInput)) return directInput;
+
+  const promptTokens = Number(usage.prompt_tokens ?? usage.input_tokens ?? 0);
+  const safePromptTokens = Number.isFinite(promptTokens) ? promptTokens : 0;
+  const { cacheRead, cacheCreation, promptIncludesCache } = getCacheMetrics(usage);
+
+  return promptIncludesCache ? safePromptTokens : safePromptTokens + cacheRead + cacheCreation;
+}
+
 /**
  * Check if usage has valid token data
  * Valid = has at least one token field with value > 0
@@ -224,7 +275,9 @@ export function extractUsage(chunk) {
     return normalizeUsage({
       prompt_tokens: usage.input_tokens || usage.prompt_tokens || 0,
       completion_tokens: usage.output_tokens || usage.completion_tokens || 0,
-      cached_tokens: usage.input_tokens_details?.cached_tokens,
+      cached_tokens: usage.cache_read_input_tokens ?? usage.input_tokens_details?.cached_tokens,
+      cache_creation_input_tokens:
+        usage.cache_creation_input_tokens ?? usage.input_tokens_details?.cache_creation_tokens,
       reasoning_tokens: usage.output_tokens_details?.reasoning_tokens,
     });
   }
@@ -235,6 +288,7 @@ export function extractUsage(chunk) {
       prompt_tokens: chunk.usage.prompt_tokens,
       completion_tokens: chunk.usage.completion_tokens || 0,
       cached_tokens: chunk.usage.prompt_tokens_details?.cached_tokens,
+      cache_creation_input_tokens: chunk.usage.prompt_tokens_details?.cache_creation_tokens,
       reasoning_tokens: chunk.usage.completion_tokens_details?.reasoning_tokens,
     });
   }
@@ -376,7 +430,7 @@ export function logUsage(provider, usage, model = null, connectionId = null, api
   // Support both formats:
   // - OpenAI: prompt_tokens, completion_tokens
   // - Claude: input_tokens, output_tokens
-  const inTokens = usage?.prompt_tokens || usage?.input_tokens || 0;
+  const inTokens = getTotalInputTokens(usage);
   const outTokens = usage?.completion_tokens || usage?.output_tokens || 0;
   const accountPrefix = connectionId ? connectionId.slice(0, 8) + "..." : "unknown";
 
@@ -388,10 +442,9 @@ export function logUsage(provider, usage, model = null, connectionId = null, api
   }
 
   // Add cache info if present (unified from different formats)
-  const cacheRead = usage.cache_read_input_tokens || usage.cached_tokens;
+  const { cacheRead, cacheCreation } = getCacheMetrics(usage);
   if (cacheRead) msg += ` | cache_read=${cacheRead}`;
 
-  const cacheCreation = usage.cache_creation_input_tokens;
   if (cacheCreation) msg += ` | cache_create=${cacheCreation}`;
 
   const reasoning = usage.reasoning_tokens;
@@ -400,10 +453,8 @@ export function logUsage(provider, usage, model = null, connectionId = null, api
   console.log(msg);
 
   // Save to usage DB
-  // input = total input tokens (non-cached + cache_read + cache_creation)
-  // This ensures analytics show correct totals for heavily-cached requests
   const tokens = {
-    input: inTokens + (cacheRead || 0) + (cacheCreation || 0),
+    input: inTokens,
     output: outTokens,
     cacheRead: cacheRead || 0,
     cacheCreation: cacheCreation || 0,
@@ -417,5 +468,6 @@ export function logUsage(provider, usage, model = null, connectionId = null, api
     apiKeyName: apiKeyInfo?.name || undefined,
     tokens,
   }).catch(() => {});
+  void recordUsageCost(apiKeyInfo, provider, model, usage).catch(() => {});
   appendRequestLog({ model, provider, connectionId, tokens, status: "200 OK" }).catch(() => {});
 }

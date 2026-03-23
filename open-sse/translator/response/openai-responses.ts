@@ -494,11 +494,15 @@ export function openaiResponsesToOpenAIResponse(chunk, state) {
     if (responseUsage && typeof responseUsage === "object") {
       const inputTokens = responseUsage.input_tokens || responseUsage.prompt_tokens || 0;
       const outputTokens = responseUsage.output_tokens || responseUsage.completion_tokens || 0;
-      const cacheReadTokens = responseUsage.cache_read_input_tokens || 0;
-      const cacheCreationTokens = responseUsage.cache_creation_input_tokens || 0;
+      const cacheReadTokens =
+        responseUsage.cache_read_input_tokens || responseUsage.input_tokens_details?.cached_tokens || 0;
+      const cacheCreationTokens =
+        responseUsage.cache_creation_input_tokens ||
+        responseUsage.input_tokens_details?.cache_creation_tokens ||
+        0;
 
-      // prompt_tokens = input_tokens + cache_read + cache_creation (all prompt-side tokens)
-      const promptTokens = inputTokens + cacheReadTokens + cacheCreationTokens;
+      // Responses usage.input_tokens already represents the full prompt-side total.
+      const promptTokens = inputTokens;
 
       state.usage = {
         prompt_tokens: promptTokens,

@@ -66,11 +66,11 @@ export default function ProxyLogDetail({ log, onClose, providerNodes = [] }) {
     >
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
       <div
-        className="relative bg-bg-primary border border-border rounded-xl w-full max-w-[700px] max-h-[90vh] overflow-y-auto shadow-2xl"
+        className="relative bg-surface border border-black/10 dark:border-white/10 rounded-xl w-full max-w-[700px] max-h-[90vh] overflow-y-auto shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="sticky top-0 z-10 flex items-center justify-between px-6 py-4 border-b border-border bg-bg-primary/95 backdrop-blur-sm rounded-t-xl">
+        <div className="sticky top-0 z-10 flex items-center justify-between px-6 py-4 border-b border-black/8 dark:border-white/10 bg-white/95 dark:bg-surface/95 backdrop-blur-sm rounded-t-xl">
           <div className="flex items-center gap-3">
             <span
               className="inline-block px-2.5 py-1 rounded text-xs font-bold uppercase"
@@ -82,7 +82,7 @@ export default function ProxyLogDetail({ log, onClose, providerNodes = [] }) {
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 rounded-lg hover:bg-bg-subtle text-text-muted hover:text-text-primary transition-colors"
+            className="p-1.5 rounded-lg hover:bg-black/5 dark:hover:bg-white/5 text-text-muted hover:text-text-primary transition-colors"
             aria-label="Close proxy detail modal"
           >
             <span className="material-symbols-outlined">close</span>
@@ -190,7 +190,7 @@ export default function ProxyLogDetail({ log, onClose, providerNodes = [] }) {
               <div className="text-[10px] text-text-muted uppercase tracking-wider mb-2 font-bold">
                 Proxy Configuration
               </div>
-              <pre className="text-xs font-mono text-text-primary bg-black/20 rounded-lg p-3 overflow-x-auto">
+              <pre className="text-xs font-mono text-text-primary bg-black/[0.035] dark:bg-black/20 rounded-lg p-3 overflow-x-auto">
                 {JSON.stringify(log.proxy, null, 2)}
               </pre>
             </div>

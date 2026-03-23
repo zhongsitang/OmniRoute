@@ -3,12 +3,36 @@
 // Based on user-provided pricing for Antigravity models and industry standards for others
 
 // Shared pricing constants to reduce duplication
-const GPT_5_3_CODEX_PRICING = {
-  input: 5.0,
-  output: 20.0,
-  cached: 2.5,
-  reasoning: 30.0,
-  cache_creation: 5.0,
+const GPT_5_4_PRICING = {
+  input: 2.5,
+  output: 15.0,
+  cached: 0.25,
+  reasoning: 15.0,
+  cache_creation: 2.5,
+};
+
+const GPT_5_2_TIER_PRICING = {
+  input: 1.75,
+  output: 14.0,
+  cached: 0.175,
+  reasoning: 14.0,
+  cache_creation: 1.75,
+};
+
+const GPT_5_1_TIER_PRICING = {
+  input: 1.25,
+  output: 10.0,
+  cached: 0.125,
+  reasoning: 10.0,
+  cache_creation: 1.25,
+};
+
+const GPT_5_1_CODEX_MINI_PRICING = {
+  input: 0.25,
+  output: 2.0,
+  cached: 0.025,
+  reasoning: 2.0,
+  cache_creation: 0.25,
 };
 
 const CLAUDE_OPUS_4_PRICING = {
@@ -88,55 +112,19 @@ export const DEFAULT_PRICING = {
   // OpenAI Codex (cx)
   cx: {
     // GPT 5.4
-    "gpt-5.4": {
-      input: 5.0,
-      output: 20.0,
-      cached: 2.5,
-      reasoning: 30.0,
-      cache_creation: 5.0,
-    },
-    "gpt5.4": {
-      input: 5.0,
-      output: 20.0,
-      cached: 2.5,
-      reasoning: 30.0,
-      cache_creation: 5.0,
-    },
+    "gpt-5.4": GPT_5_4_PRICING,
+    "gpt5.4": GPT_5_4_PRICING,
     // GPT 5.3 Codex family (all same pricing tier)
-    "gpt-5.3-codex": GPT_5_3_CODEX_PRICING,
-    "gpt-5.3-codex-xhigh": GPT_5_3_CODEX_PRICING,
-    "gpt-5.3-codex-high": GPT_5_3_CODEX_PRICING,
-    "gpt-5.3-codex-low": GPT_5_3_CODEX_PRICING,
-    "gpt-5.3-codex-none": GPT_5_3_CODEX_PRICING,
-    "gpt-5.1-codex-mini-high": {
-      input: 1.5,
-      output: 6.0,
-      cached: 0.75,
-      reasoning: 9.0,
-      cache_creation: 1.5,
-    },
-    "gpt-5.2-codex": {
-      input: 5.0,
-      output: 20.0,
-      cached: 2.5,
-      reasoning: 30.0,
-      cache_creation: 5.0,
-    },
+    "gpt-5.3-codex": GPT_5_2_TIER_PRICING,
+    "gpt-5.3-codex-xhigh": GPT_5_2_TIER_PRICING,
+    "gpt-5.3-codex-high": GPT_5_2_TIER_PRICING,
+    "gpt-5.3-codex-low": GPT_5_2_TIER_PRICING,
+    "gpt-5.3-codex-none": GPT_5_2_TIER_PRICING,
+    "gpt-5.1-codex-mini-high": GPT_5_1_CODEX_MINI_PRICING,
+    "gpt-5.2-codex": GPT_5_2_TIER_PRICING,
 
-    "gpt-5.2": {
-      input: 5.0,
-      output: 20.0,
-      cached: 2.5,
-      reasoning: 30.0,
-      cache_creation: 5.0,
-    },
-    "gpt-5.1-codex-max": {
-      input: 8.0,
-      output: 32.0,
-      cached: 4.0,
-      reasoning: 48.0,
-      cache_creation: 8.0,
-    },
+    "gpt-5.2": GPT_5_2_TIER_PRICING,
+    "gpt-5.1-codex-max": GPT_5_1_TIER_PRICING,
     "gpt-5.1-codex": {
       input: 4.0,
       output: 16.0,
@@ -144,20 +132,9 @@ export const DEFAULT_PRICING = {
       reasoning: 24.0,
       cache_creation: 4.0,
     },
-    "gpt-5.1-codex-mini": {
-      input: 1.5,
-      output: 6.0,
-      cached: 0.75,
-      reasoning: 9.0,
-      cache_creation: 1.5,
-    },
-    "gpt-5.1": {
-      input: 4.0,
-      output: 16.0,
-      cached: 2.0,
-      reasoning: 24.0,
-      cache_creation: 4.0,
-    },
+    "gpt-5.1-codex-mini": GPT_5_1_CODEX_MINI_PRICING,
+    "gpt-5.1": GPT_5_1_TIER_PRICING,
+    "gpt-5": GPT_5_1_TIER_PRICING,
     "gpt-5-codex": {
       input: 3.0,
       output: 12.0,
@@ -1241,7 +1218,8 @@ export function calculateCostFromTokens(
 
   // Reasoning tokens
   const reasoningTokens = tokens.reasoning_tokens || 0;
-  if (reasoningTokens > 0) {
+  // reasoning_tokens is typically already included in completion/output totals.
+  if (reasoningTokens > 0 && outputTokens <= 0) {
     const reasoningRate = pricing.reasoning || pricing.output; // Fallback to output rate
     cost += reasoningTokens * (reasoningRate / 1000000);
   }

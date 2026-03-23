@@ -87,13 +87,14 @@ export default function ModelAvailabilityBadge() {
 
   const models = data?.models || [];
   const unavailableCount =
-    data?.unavailableCount || models.filter((m: any) => m.status !== "available").length;
+    data?.unavailableCount ||
+    models.filter((m: any) => (m.status || "cooldown") !== "available").length;
   const isHealthy = unavailableCount === 0;
 
   // Group unhealthy models by provider
   const byProvider: Record<string, any[]> = {};
   models.forEach((m: any) => {
-    if (m.status === "available") return;
+    if ((m.status || "cooldown") === "available") return;
     const key = m.provider || "unknown";
     if (!byProvider[key]) byProvider[key] = [];
     byProvider[key].push(m);
@@ -152,8 +153,9 @@ export default function ModelAvailabilityBadge() {
                     </p>
                     <div className="flex flex-col gap-1">
                       {provModels.map((m) => {
+                        const modelStatus = m.status || "cooldown";
                         const status =
-                          STATUS_CONFIG[m.status as keyof typeof STATUS_CONFIG] ||
+                          STATUS_CONFIG[modelStatus as keyof typeof STATUS_CONFIG] ||
                           STATUS_CONFIG.unknown;
                         const isClearing = clearing === `${m.provider}:${m.model}`;
                         return (
@@ -173,7 +175,7 @@ export default function ModelAvailabilityBadge() {
                                 {m.model}
                               </span>
                             </div>
-                            {m.status === "cooldown" && (
+                            {modelStatus === "cooldown" && (
                               <Button
                                 size="sm"
                                 variant="ghost"

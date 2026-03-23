@@ -37,8 +37,10 @@ describe("modelAvailability", () => {
     assert.equal(report.length, 1);
     assert.equal(report[0].provider, "openai");
     assert.equal(report[0].model, "gpt-4o");
+    assert.equal(report[0].status, "cooldown");
     assert.equal(report[0].reason, "rate limited");
     assert.ok(report[0].remainingMs > 0);
+    assert.equal(report[0].cooldownUntil, report[0].resetAt);
   });
 
   it("should count unavailable models", () => {

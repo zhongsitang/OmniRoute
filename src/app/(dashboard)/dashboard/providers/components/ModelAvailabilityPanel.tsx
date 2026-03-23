@@ -84,7 +84,8 @@ export default function ModelAvailabilityPanel() {
 
   const models = data?.models || [];
   const unavailableCount =
-    data?.unavailableCount || models.filter((m: any) => m.status !== "available").length;
+    data?.unavailableCount ||
+    models.filter((m: any) => (m.status || "cooldown") !== "available").length;
 
   if (models.length === 0 || unavailableCount === 0) {
     return (
@@ -107,7 +108,7 @@ export default function ModelAvailabilityPanel() {
   // Group by provider
   const byProvider: Record<string, any[]> = {};
   models.forEach((m: any) => {
-    if (m.status === "available") return;
+    if ((m.status || "cooldown") === "available") return;
     const key = m.provider || "unknown";
     if (!byProvider[key]) byProvider[key] = [];
     byProvider[key].push(m);
@@ -148,8 +149,10 @@ export default function ModelAvailabilityPanel() {
             <p className="text-sm font-medium text-text-main mb-2 capitalize">{provider}</p>
             <div className="flex flex-col gap-1.5">
               {provModels.map((m) => {
+                const modelStatus = m.status || "cooldown";
+                const cooldownUntil = m.cooldownUntil || m.resetAt || null;
                 const status =
-                  STATUS_CONFIG[m.status as keyof typeof STATUS_CONFIG] || STATUS_CONFIG.unknown;
+                  STATUS_CONFIG[modelStatus as keyof typeof STATUS_CONFIG] || STATUS_CONFIG.unknown;
                 const isClearing = clearing === `${m.provider}:${m.model}`;
                 return (
                   <div
@@ -174,13 +177,13 @@ export default function ModelAvailabilityPanel() {
                       >
                         {status.label}
                       </span>
-                      {m.cooldownUntil && (
+                      {cooldownUntil && (
                         <span className="text-xs text-text-muted">
-                          {t("until", { time: new Date(m.cooldownUntil).toLocaleTimeString() })}
+                          {t("until", { time: new Date(cooldownUntil).toLocaleTimeString() })}
                         </span>
                       )}
                     </div>
-                    {m.status === "cooldown" && (
+                    {modelStatus === "cooldown" && (
                       <Button
                         size="sm"
                         variant="ghost"

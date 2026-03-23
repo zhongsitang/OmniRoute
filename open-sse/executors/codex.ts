@@ -9,6 +9,48 @@ type EffortLevel = (typeof EFFORT_ORDER)[number];
 const CODEX_FAST_WIRE_VALUE = "priority";
 let defaultFastServiceTierEnabled = false;
 
+function normalizeNativeResponsesInputItem(item: unknown): unknown {
+  if (typeof item === "string") {
+    return {
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: item }],
+    };
+  }
+
+  if (!item || typeof item !== "object") return item;
+
+  if ("type" in item || "role" in item) {
+    return "type" in item ? item : { type: "message", ...(item as Record<string, unknown>) };
+  }
+
+  if ("text" in item && typeof item.text === "string") {
+    return {
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: item.text }],
+    };
+  }
+
+  return item;
+}
+
+function normalizeNativeResponsesInput(body: Record<string, unknown>): void {
+  if (typeof body.input === "string") {
+    body.input = [normalizeNativeResponsesInputItem(body.input)];
+    return;
+  }
+
+  if (Array.isArray(body.input)) {
+    body.input = body.input.map(normalizeNativeResponsesInputItem);
+    return;
+  }
+
+  if (body.input && typeof body.input === "object") {
+    body.input = [normalizeNativeResponsesInputItem(body.input)];
+  }
+}
+
 function getResponsesSubpath(endpointPath: unknown): string | null {
   const normalizedEndpoint = String(endpointPath || "").replace(/\/+$/, "");
   const match = normalizedEndpoint.match(/(?:^|\/)responses(?:(\/.*))?$/i);
@@ -154,17 +196,19 @@ export class CodexExecutor extends BaseExecutor {
       body.service_tier = CODEX_FAST_WIRE_VALUE;
     }
 
-    if (nativeCodexPassthrough) {
-      return body;
-    }
-
-    // If no instructions provided, inject default Codex instructions
-    if (!body.instructions || body.instructions.trim() === "") {
+    // Codex /responses passthrough still needs a system prompt because upstream
+    // rejects requests that omit instructions entirely.
+    if (typeof body.instructions !== "string" || body.instructions.trim() === "") {
       body.instructions = CODEX_DEFAULT_INSTRUCTIONS;
     }
 
-    // Ensure store is false (Codex requirement)
+    // Codex requires store=false even for native /responses payloads.
     body.store = false;
+
+    if (nativeCodexPassthrough) {
+      normalizeNativeResponsesInput(body);
+      return body;
+    }
 
     // Extract thinking level from model name suffix
     // e.g., gpt-5.3-codex-high → high, gpt-5.3-codex → medium (default)

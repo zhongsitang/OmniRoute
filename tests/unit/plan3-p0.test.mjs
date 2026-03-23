@@ -6,6 +6,7 @@ import { getModelInfoCore } from "../../open-sse/services/model.ts";
 import { detectFormat } from "../../open-sse/services/provider.ts";
 import { shouldUseNativeCodexPassthrough } from "../../open-sse/handlers/chatCore.ts";
 import { translateRequest } from "../../open-sse/translator/index.ts";
+import { CODEX_DEFAULT_INSTRUCTIONS } from "../../open-sse/config/codexInstructions.ts";
 import { GithubExecutor } from "../../open-sse/executors/github.ts";
 import { DefaultExecutor } from "../../open-sse/executors/default.ts";
 import { CodexExecutor, setDefaultFastServiceTierEnabled } from "../../open-sse/executors/codex.ts";
@@ -176,7 +177,7 @@ test("CodexExecutor does not request SSE accept header for compact requests", ()
   assert.equal(headers.Accept, undefined);
 });
 
-test("CodexExecutor preserves native responses payloads for Codex passthrough", () => {
+test("CodexExecutor normalizes native responses payloads for Codex passthrough", () => {
   const executor = new CodexExecutor();
   const transformed = executor.transformRequest(
     "gpt-5.1-codex",
@@ -197,9 +198,35 @@ test("CodexExecutor preserves native responses payloads for Codex passthrough", 
   assert.equal(transformed.stream, true);
   assert.equal(transformed.service_tier, "priority");
   assert.equal(transformed.instructions, "custom system prompt");
-  assert.equal(transformed.store, true);
+  assert.equal(transformed.store, false);
   assert.deepEqual(transformed.metadata, { source: "codex-client" });
   assert.equal(transformed.reasoning_effort, "high");
+  assert.ok(!("_nativeCodexPassthrough" in transformed));
+});
+
+test("CodexExecutor injects default instructions for native responses passthrough", () => {
+  const executor = new CodexExecutor();
+  const transformed = executor.transformRequest(
+    "gpt-5.1-codex",
+    {
+      model: "gpt-5.1-codex",
+      input: "ship it",
+      _nativeCodexPassthrough: true,
+      stream: false,
+    },
+    false
+  );
+
+  assert.equal(transformed.stream, true);
+  assert.equal(transformed.instructions, CODEX_DEFAULT_INSTRUCTIONS);
+  assert.equal(transformed.store, false);
+  assert.deepEqual(transformed.input, [
+    {
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "ship it" }],
+    },
+  ]);
   assert.ok(!("_nativeCodexPassthrough" in transformed));
 });
 

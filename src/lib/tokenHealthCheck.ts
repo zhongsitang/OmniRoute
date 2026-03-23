@@ -11,8 +11,8 @@
  */
 
 import { getProviderConnections, updateProviderConnection, getSettings } from "@/lib/localDb";
+import { getAccessToken } from "@/sse/services/tokenRefresh";
 import {
-  getAccessToken,
   supportsTokenRefresh,
   isUnrecoverableRefreshError,
 } from "@omniroute/open-sse/services/tokenRefresh.ts";
@@ -195,6 +195,7 @@ async function checkConnection(conn) {
   );
 
   const credentials = {
+    connectionId: conn.id,
     refreshToken: conn.refreshToken,
     accessToken: conn.accessToken,
     expiresAt: conn.tokenExpiresAt,

@@ -1,6 +1,7 @@
 // Re-export from open-sse with local logger
 import * as log from "../utils/logger";
-import { updateProviderConnection } from "@/lib/localDb";
+import { resolveProxyForConnection, updateProviderConnection } from "@/lib/localDb";
+import { runWithProxyContext } from "@omniroute/open-sse/utils/proxyFetch.ts";
 import {
   TOKEN_EXPIRY_BUFFER_MS as BUFFER_MS,
   refreshAccessToken as _refreshAccessToken,
@@ -18,6 +19,25 @@ import {
 } from "@omniroute/open-sse/services/tokenRefresh.ts";
 
 export const TOKEN_EXPIRY_BUFFER_MS = BUFFER_MS;
+
+async function runWithRefreshProxy(credentials: any, fn: () => Promise<any>) {
+  const connectionId =
+    credentials && typeof credentials.connectionId === "string" ? credentials.connectionId : null;
+  if (!connectionId) {
+    return fn();
+  }
+
+  try {
+    const proxyInfo = await resolveProxyForConnection(connectionId);
+    return await runWithProxyContext(proxyInfo?.proxy || null, fn);
+  } catch (error) {
+    log.warn("PROXY", "Failed to resolve proxy for token refresh; falling back to direct", {
+      connectionId,
+      error: (error as Error).message,
+    });
+    return fn();
+  }
+}
 
 export const refreshAccessToken = (provider: string, refreshToken: string, credentials: any) =>
   _refreshAccessToken(provider, refreshToken, credentials, log);
@@ -40,10 +60,10 @@ export const refreshCopilotToken = (githubAccessToken: string) =>
   _refreshCopilotToken(githubAccessToken, log);
 
 export const getAccessToken = (provider: string, credentials: any) =>
-  _getAccessToken(provider, credentials, log);
+  runWithRefreshProxy(credentials, () => _getAccessToken(provider, credentials, log));
 
 export const refreshTokenByProvider = (provider: string, credentials: any) =>
-  _refreshTokenByProvider(provider, credentials, log);
+  runWithRefreshProxy(credentials, () => _refreshTokenByProvider(provider, credentials, log));
 
 export const formatProviderCredentials = (provider: string, credentials: any) =>
   _formatProviderCredentials(provider, credentials, log);

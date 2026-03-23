@@ -36,11 +36,7 @@ import {
   setModelUnavailable,
   clearModelUnavailability,
 } from "../../domain/modelAvailability";
-import {
-  markAccountExhaustedFrom429,
-  setQuotaCacheFromUsage,
-  getQuotaResetAt,
-} from "../../domain/quotaCache";
+import { markAccountExhaustedFrom429, setQuotaCacheFromUsage } from "../../domain/quotaCache";
 import { RequestTelemetry, recordTelemetry } from "../../shared/utils/requestTelemetry";
 import { generateRequestId } from "../../shared/utils/requestId";
 import { recordCost } from "../../domain/costRules";
@@ -218,7 +214,6 @@ export async function handleChat(request: any, clientRawRequest: any = null) {
     );
 
     // Pre-check function: skip models where all accounts are in cooldown
-    // Uses modelAvailability module for TTL-based cooldowns
     const checkModelAvailable = async (modelString: string) => {
       if (isLiveProbe) return true;
 
@@ -473,9 +468,10 @@ async function handleSingleModelChat(
       return result.response;
     }
 
-    // 6. Sync quota state for generic 429s and any provider-specific quota-exhausted failure.
+    // 6. Sync compatible-provider resetAt before marking account unavailable.
+    let exactResetAt: string | null = null;
     if (result.status === 429 || isQuotaExhaustionFailure(result.status, result.error)) {
-      await syncQuotaStateFromFailure(
+      exactResetAt = await syncCompatibleQuotaStateFromFailure(
         result.status,
         provider,
         credentials,
@@ -490,7 +486,8 @@ async function handleSingleModelChat(
       result.status,
       result.error,
       provider,
-      model
+      model,
+      exactResetAt
     );
 
     if (shouldFallback) {
@@ -578,7 +575,6 @@ function checkPipelineGates(provider: string, model: string) {
       30
     );
   }
-
   return null;
 }
 
@@ -723,18 +719,22 @@ async function safeResolveProxy(connectionId: string) {
   }
 }
 
-async function syncQuotaStateFromFailure(
+function getCompatibleResetAt(usage: any): string | null {
+  const resetAt = usage?.usageType === "compatible-balance" ? usage?.balance?.resetAt : null;
+  if (typeof resetAt !== "string") return null;
+  const resetMs = new Date(resetAt).getTime();
+  if (!Number.isFinite(resetMs) || resetMs <= Date.now()) return null;
+  return resetAt;
+}
+
+async function syncCompatibleQuotaStateFromFailure(
   status: number,
   provider: string,
   credentials: any,
   refreshedCredentials: any,
   errorText: string | null
 ) {
-  const quotaFailure = isQuotaExhaustionFailure(status, errorText);
-  if (!quotaFailure) {
-    markAccountExhaustedFrom429(credentials.connectionId, provider);
-    return;
-  }
+  let exactResetAt: string | null = null;
 
   try {
     const proxyInfo = await safeResolveProxy(credentials.connectionId);
@@ -748,7 +748,10 @@ async function syncQuotaStateFromFailure(
     const usage = await runWithProxyContext(proxyInfo?.proxy || null, () =>
       getUsageForProvider(usageConnection)
     );
-    setQuotaCacheFromUsage(credentials.connectionId, provider, usage);
+    exactResetAt = getCompatibleResetAt(usage);
+    if (exactResetAt) {
+      setQuotaCacheFromUsage(credentials.connectionId, provider, usage);
+    }
   } catch (usageErr: any) {
     log.debug(
       "QUOTA",
@@ -756,8 +759,8 @@ async function syncQuotaStateFromFailure(
     );
   }
 
-  const preciseResetAt = getQuotaResetAt(credentials.connectionId);
-  markAccountExhaustedFrom429(credentials.connectionId, provider, preciseResetAt);
+  markAccountExhaustedFrom429(credentials.connectionId, provider, exactResetAt);
+  return exactResetAt;
 }
 
 function safeLogEvents({

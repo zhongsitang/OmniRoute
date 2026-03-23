@@ -10,7 +10,6 @@ process.env.DATA_DIR = TEST_DATA_DIR;
 const core = await import("../../src/lib/db/core.ts");
 const providersDb = await import("../../src/lib/db/providers.ts");
 const auth = await import("../../src/sse/services/auth.ts");
-const quotaCache = await import("../../src/domain/quotaCache.ts");
 const accountFallback = await import("../../open-sse/services/accountFallback.ts");
 
 async function resetStorage() {
@@ -39,14 +38,14 @@ test("markAccountUnavailable locks quota-exhausted accounts until exact provider
   });
 
   const resetAt = new Date(Date.now() + 45 * 60 * 1000).toISOString();
-  quotaCache.markAccountExhaustedFrom429(connection.id, connection.provider, resetAt);
 
   const result = await auth.markAccountUnavailable(
     connection.id,
     429,
     'error: code=429 reason="DAILY_LIMIT_EXCEEDED" message="daily usage limit exceeded"',
     connection.provider,
-    "gpt-5.4"
+    "gpt-5.4",
+    resetAt
   );
 
   assert.equal(result.shouldFallback, true);
@@ -84,14 +83,14 @@ test("markAccountUnavailable also honors exact reset for non-429 quota exhaustio
   });
 
   const resetAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
-  quotaCache.markAccountExhaustedFrom429(connection.id, connection.provider, resetAt);
 
   const result = await auth.markAccountUnavailable(
     connection.id,
     402,
     "billing hard limit reached",
     connection.provider,
-    "gpt-5.4"
+    "gpt-5.4",
+    resetAt
   );
 
   assert.equal(result.shouldFallback, true);

@@ -4,18 +4,13 @@ import {
   updateProviderConnection,
   getSettings,
 } from "@/lib/localDb";
-import {
-  getQuotaWindowStatus,
-  isAccountQuotaExhausted,
-  getQuotaResetAt,
-} from "@/domain/quotaCache";
+import { getQuotaWindowStatus, isAccountQuotaExhausted } from "@/domain/quotaCache";
 import {
   isAccountUnavailable,
   getUnavailableUntil,
   getEarliestRateLimitedUntil,
   formatRetryAfter,
   checkFallbackError,
-  isModelLocked,
   lockModel,
 } from "@omniroute/open-sse/services/accountFallback.ts";
 import { isLocalProvider } from "@omniroute/open-sse/config/providerRegistry.ts";
@@ -156,8 +151,6 @@ function applyCodexWindowPolicy(rawWindows: string[], providerSpecificData: Json
   const codexPolicy = getCodexLimitPolicy(providerSpecificData);
   const normalizedRaw = rawWindows.map(normalizeCodexWindowName).filter(Boolean) as string[];
 
-  // Preserve explicitly configured custom windows, but enforce canonical Codex windows
-  // from toggles so weekly exhaustion is never skipped when useWeekly=true.
   let windows = [...normalizedRaw];
   windows = windows.filter((windowName) => {
     if (windowName === "session") return codexPolicy.use5h;
@@ -362,7 +355,6 @@ export async function getProviderCredentials(
     if (availableConnections.length === 0) {
       const earliest = getEarliestRateLimitedUntil(connections);
       if (earliest) {
-        // Find the connection with the earliest rateLimitedUntil to get its error info
         const rateLimitedConns = connections.filter(
           (c) => c.rateLimitedUntil && new Date(c.rateLimitedUntil).getTime() > Date.now()
         );
@@ -627,7 +619,8 @@ export async function markAccountUnavailable(
   status: number,
   errorText: string,
   provider: string | null = null,
-  model: string | null = null
+  model: string | null = null,
+  exactResetAt: string | null = null
 ) {
   const currentMutex = markMutexes.get(connectionId) || Promise.resolve();
   let resolveMutex: (() => void) | undefined;
@@ -674,20 +667,17 @@ export async function markAccountUnavailable(
     if (!shouldFallback) return { shouldFallback: false, cooldownMs: 0 };
 
     let resolvedCooldownMs = cooldownMs;
-    let rateLimitedUntil = resolvedCooldownMs > 0 ? getUnavailableUntil(resolvedCooldownMs) : null;
+    let rateLimitedUntil = getUnavailableUntil(cooldownMs);
 
-    if (reason === "quota_exhausted") {
-      const quotaResetAt = getQuotaResetAt(connectionId);
-      if (quotaResetAt) {
-        const exactCooldownMs = new Date(quotaResetAt).getTime() - Date.now();
-        if (exactCooldownMs > 0) {
-          resolvedCooldownMs = exactCooldownMs;
-          rateLimitedUntil = quotaResetAt;
-          log.info(
-            "AUTH",
-            `${connectionId.slice(0, 8)} quota exhausted — locking until provider reset ${quotaResetAt}`
-          );
-        }
+    if (typeof exactResetAt === "string") {
+      const exactCooldownMs = new Date(exactResetAt).getTime() - Date.now();
+      if (exactCooldownMs > 0) {
+        resolvedCooldownMs = exactCooldownMs;
+        rateLimitedUntil = exactResetAt;
+        log.info(
+          "AUTH",
+          `${connectionId.slice(0, 8)} quota exhausted — locking until provider reset ${exactResetAt}`
+        );
       }
     }
 

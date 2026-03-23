@@ -171,7 +171,7 @@ test("checkFallbackError: backward compatible without model param", () => {
   assert.equal(result.reason, RateLimitReason.RATE_LIMIT_EXCEEDED);
 });
 
-test("checkFallbackError: daily quota exhaustion gets longer cooldown than generic 429", () => {
+test("checkFallbackError: daily quota exhaustion stays on standard backoff without exact reset", () => {
   const generic = checkFallbackError(429, "Rate limit hit", 0);
   const exhausted = checkFallbackError(
     429,
@@ -182,11 +182,11 @@ test("checkFallbackError: daily quota exhaustion gets longer cooldown than gener
   assert.equal(exhausted.shouldFallback, true);
   assert.equal(exhausted.newBackoffLevel, 1);
   assert.equal(exhausted.reason, RateLimitReason.QUOTA_EXHAUSTED);
-  assert.ok(exhausted.cooldownMs > generic.cooldownMs);
-  assert.equal(exhausted.cooldownMs, 120000);
+  assert.equal(exhausted.cooldownMs, generic.cooldownMs);
+  assert.equal(exhausted.cooldownMs, getQuotaCooldown(0));
 });
 
-test("checkFallbackError: repeated daily quota exhaustion escalates with long-step backoff", () => {
+test("checkFallbackError: repeated daily quota exhaustion uses standard exponential backoff", () => {
   const exhausted = checkFallbackError(
     429,
     'error: code=429 reason="DAILY_LIMIT_EXCEEDED" message="daily usage limit exceeded"',
@@ -194,7 +194,25 @@ test("checkFallbackError: repeated daily quota exhaustion escalates with long-st
   );
 
   assert.equal(exhausted.reason, RateLimitReason.QUOTA_EXHAUSTED);
-  assert.equal(exhausted.cooldownMs, BACKOFF_STEPS_MS[2]);
+  assert.equal(exhausted.cooldownMs, getQuotaCooldown(2));
+});
+
+test("checkFallbackError: 402 billing exhaustion keeps payment-required cooldown", () => {
+  const exhausted = checkFallbackError(402, "billing hard limit reached", 0);
+
+  assert.equal(exhausted.shouldFallback, true);
+  assert.equal(exhausted.reason, RateLimitReason.QUOTA_EXHAUSTED);
+  assert.equal(exhausted.cooldownMs, 120000);
+  assert.equal(exhausted.newBackoffLevel, 1);
+});
+
+test("checkFallbackError: 403 billing exhaustion keeps payment-required cooldown", () => {
+  const exhausted = checkFallbackError(403, "billing hard limit reached for this account", 1);
+
+  assert.equal(exhausted.shouldFallback, true);
+  assert.equal(exhausted.reason, RateLimitReason.QUOTA_EXHAUSTED);
+  assert.equal(exhausted.cooldownMs, 120000);
+  assert.equal(exhausted.newBackoffLevel, 2);
 });
 
 test("isQuotaExhaustionFailure: detects non-429 quota exhaustion signals", () => {

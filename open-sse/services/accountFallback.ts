@@ -91,6 +91,7 @@ export function getModelLockoutInfo(provider, connectionId, model) {
     reason: entry.reason,
     remainingMs: entry.until - Date.now(),
     lockedAt: new Date(entry.lockedAt).toISOString(),
+    until: new Date(entry.until).toISOString(),
   };
 }
 
@@ -109,6 +110,8 @@ export function getAllModelLockouts() {
         model,
         reason: entry.reason,
         remainingMs: entry.until - now,
+        lockedAt: new Date(entry.lockedAt).toISOString(),
+        until: new Date(entry.until).toISOString(),
       });
     }
   }
@@ -288,10 +291,6 @@ export function getQuotaCooldown(backoffLevel = 0) {
   return Math.min(cooldown, BACKOFF_CONFIG.max);
 }
 
-function getQuotaExhaustedCooldown(backoffLevel = 0) {
-  return Math.max(COOLDOWN_MS.paymentRequired, getBackoffDuration(backoffLevel));
-}
-
 /**
  * Check if error should trigger account fallback (switch to next account)
  * @param {number} status - HTTP status code
@@ -330,20 +329,24 @@ export function checkFallbackError(
       };
     }
 
-    if (reason === RateLimitReason.QUOTA_EXHAUSTED) {
+    if (
+      reason === RateLimitReason.QUOTA_EXHAUSTED &&
+      (status === HTTP_STATUS.PAYMENT_REQUIRED || status === HTTP_STATUS.FORBIDDEN)
+    ) {
       const newLevel = Math.min(backoffLevel + 1, BACKOFF_CONFIG.maxLevel);
       return {
         shouldFallback: true,
-        cooldownMs: getQuotaExhaustedCooldown(backoffLevel),
+        cooldownMs: COOLDOWN_MS.paymentRequired,
         newBackoffLevel: newLevel,
         reason,
       };
     }
 
-    // Rate limit / capacity keywords - short exponential backoff
+    // Rate limit keywords - exponential backoff
     if (
       reason === RateLimitReason.RATE_LIMIT_EXCEEDED ||
-      reason === RateLimitReason.MODEL_CAPACITY
+      reason === RateLimitReason.MODEL_CAPACITY ||
+      reason === RateLimitReason.QUOTA_EXHAUSTED
     ) {
       const newLevel = Math.min(backoffLevel + 1, BACKOFF_CONFIG.maxLevel);
       return {
@@ -364,9 +367,11 @@ export function checkFallbackError(
   }
 
   if (status === HTTP_STATUS.PAYMENT_REQUIRED || status === HTTP_STATUS.FORBIDDEN) {
+    const newLevel = Math.min(backoffLevel + 1, BACKOFF_CONFIG.maxLevel);
     return {
       shouldFallback: true,
       cooldownMs: COOLDOWN_MS.paymentRequired,
+      newBackoffLevel: newLevel,
       reason: RateLimitReason.QUOTA_EXHAUSTED,
     };
   }

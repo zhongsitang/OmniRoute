@@ -8,7 +8,7 @@ import {
   getRateLimitStatus,
   getAllRateLimitStatus,
 } from "@omniroute/open-sse/services/rateLimitManager.ts";
-import { getAccountDisplayName, getProviderDisplayName } from "@/lib/display/names";
+import { getAccountDisplayName } from "@/lib/display/names";
 
 import { toggleRateLimitSchema } from "@/shared/validation/schemas";
 import { isValidationFailure, validateBody } from "@/shared/validation/helpers";
@@ -17,6 +17,13 @@ type JsonRecord = Record<string, unknown>;
 
 function asRecord(value: unknown): JsonRecord {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : {};
+}
+
+function getScopedModelName(provider: unknown, model: unknown) {
+  const providerName = typeof provider === "string" && provider.trim() ? provider.trim() : "";
+  const modelName = typeof model === "string" && model.trim() ? model.trim() : "";
+  if (providerName && modelName) return `${providerName} / ${modelName}`;
+  return modelName || providerName || "unknown";
 }
 
 /**
@@ -31,57 +38,36 @@ function asRecord(value: unknown): JsonRecord {
 export async function GET() {
   try {
     const connections = await getProviderConnections();
-    const connectionMeta = new Map();
     const statuses = connections.map((connRaw) => {
       const conn = asRecord(connRaw);
       const connectionId = typeof conn.id === "string" ? conn.id : "";
       const provider = typeof conn.provider === "string" ? conn.provider : "unknown";
-      const providerSpecificData = asRecord(conn.providerSpecificData);
       const name =
         (typeof conn.name === "string" && conn.name.trim()) ||
         (typeof conn.email === "string" && conn.email.trim()) ||
         getAccountDisplayName({ id: connectionId });
-      const providerDisplayName = getProviderDisplayName(provider, {
-        id: provider,
-        name:
-          (typeof providerSpecificData.nodeName === "string" && providerSpecificData.nodeName) ||
-          (typeof providerSpecificData.name === "string" && providerSpecificData.name) ||
-          null,
-        prefix:
-          (typeof providerSpecificData.prefix === "string" && providerSpecificData.prefix) || null,
-      });
-
-      connectionMeta.set(connectionId, {
-        connectionId,
-        provider,
-        name,
-        providerDisplayName,
-      });
 
       return {
         connectionId,
         provider,
         name,
-        providerDisplayName,
         rateLimitProtection: conn.rateLimitProtection === true,
         ...getRateLimitStatus(provider, connectionId),
       };
     });
 
-    const lockouts = getAllModelLockouts().map((lockout) => {
-      const meta = connectionMeta.get(lockout.connectionId);
-      const providerDisplayName =
-        meta?.providerDisplayName || getProviderDisplayName(lockout.provider);
-      const accountName =
-        meta?.name || getAccountDisplayName({ id: lockout.connectionId || undefined });
-
-      return {
-        ...lockout,
-        providerDisplayName,
-        accountName,
-        scopedModelName: `${providerDisplayName} / ${lockout.model}`,
-      };
-    });
+    const connectionNames = new Map(
+      statuses
+        .filter((status) => status.connectionId)
+        .map((status) => [status.connectionId, status.name])
+    );
+    const lockouts = getAllModelLockouts().map((lockout) => ({
+      ...lockout,
+      accountName:
+        connectionNames.get(lockout.connectionId) ||
+        getAccountDisplayName({ id: lockout.connectionId }),
+      scopedModelName: getScopedModelName(lockout.provider, lockout.model),
+    }));
     const cacheStats = getCacheStats();
 
     return NextResponse.json({

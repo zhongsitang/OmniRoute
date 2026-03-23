@@ -9,6 +9,7 @@ process.env.DATA_DIR = TEST_DATA_DIR;
 
 const core = await import("../../src/lib/db/core.ts");
 const providersDb = await import("../../src/lib/db/providers.ts");
+const settingsDb = await import("../../src/lib/db/settings.ts");
 const auth = await import("../../src/sse/services/auth.ts");
 const chatRoute = await import("../../src/app/api/v1/chat/completions/route.ts");
 
@@ -42,6 +43,28 @@ test("getProviderCredentials liveProbe does not mutate usage ordering metadata",
   const updated = await providersDb.getProviderConnectionById(connection.id);
   assert.ok(updated.lastUsedAt == null);
   assert.equal(updated.consecutiveUseCount, 7);
+});
+
+test("getProviderCredentials still records usage metadata for normal requests", async () => {
+  await resetStorage();
+  await settingsDb.updateSettings({ fallbackStrategy: "least-used" });
+
+  const connection = await providersDb.createProviderConnection({
+    provider: "openai",
+    authType: "apikey",
+    name: "Normal Account",
+    apiKey: "sk-normal",
+    isActive: true,
+    testStatus: "active",
+    consecutiveUseCount: 4,
+  });
+
+  const credentials = await auth.getProviderCredentials("openai");
+  assert.equal(credentials.connectionId, connection.id);
+
+  const updated = await providersDb.getProviderConnectionById(connection.id);
+  assert.equal(updated.consecutiveUseCount, 4);
+  assert.ok(typeof updated.lastUsedAt === "string");
 });
 
 test("live probe chat failures do not mark the account unavailable", async () => {

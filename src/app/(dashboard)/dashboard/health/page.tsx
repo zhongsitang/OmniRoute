@@ -146,7 +146,7 @@ export default function HealthPage() {
 
   const { system, providerHealth, rateLimitStatus, lockouts } = data;
   const cbEntries = Object.entries(providerHealth || {});
-  const lockoutEntries = Object.entries(lockouts || {});
+  const lockoutEntries = Array.isArray(lockouts) ? lockouts : [];
   const getProviderMeta = (providerId) => {
     if (isOpenAICompatibleProvider(providerId)) {
       return { color: "#10A37F", textIcon: "OC" };
@@ -653,15 +653,43 @@ export default function HealthPage() {
             {t("activeLockouts")}
           </h2>
           <div className="space-y-2">
-            {lockoutEntries.map(([key, lockout]: [string, any]) => (
+            {lockoutEntries.map((lockout: any, index: number) => (
               <div
-                key={key}
+                key={
+                  lockout.key || `${lockout.connectionId || lockout.provider || "lockout"}:${index}`
+                }
                 className="rounded-lg p-3 bg-red-500/5 border border-red-500/10 flex items-center justify-between"
               >
                 <div>
-                  <span className="text-sm font-medium text-text-main">{key}</span>
-                  {lockout.reason && (
-                    <span className="text-xs text-text-muted ml-2">({lockout.reason})</span>
+                  <div className="flex items-center gap-2">
+                    <span className="material-symbols-outlined text-[16px] text-red-400">
+                      {lockout.scope === "account" ? "lock_person" : "lock"}
+                    </span>
+                    <span className="text-sm font-medium text-text-main">
+                      {lockout.scopedModelName ||
+                        lockout.accountName ||
+                        lockout.providerDisplayName ||
+                        lockout.provider ||
+                        tc("unknown")}
+                    </span>
+                    {lockout.reason && (
+                      <span className="text-xs text-text-muted">({lockout.reason})</span>
+                    )}
+                  </div>
+                  {(lockout.accountName || lockout.providerDisplayName || lockout.connectionId) && (
+                    <p className="text-xs text-text-muted mt-1">
+                      {lockout.scope === "account" ? (
+                        <span>
+                          {lockout.providerDisplayName || lockout.provider || tc("unknown")}
+                        </span>
+                      ) : (
+                        <>
+                          {lockout.accountName || tc("unknown")}
+                          {lockout.providerDisplayName && ` · ${lockout.providerDisplayName}`}
+                        </>
+                      )}
+                      {lockout.connectionId && ` · ${lockout.connectionId.slice(0, 12)}`}
+                    </p>
                   )}
                 </div>
                 {lockout.until && (

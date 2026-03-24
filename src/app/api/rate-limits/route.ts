@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { getAllModelLockouts } from "@omniroute/open-sse/services/accountFallback.ts";
 import { getCacheStats } from "@omniroute/open-sse/services/signatureCache.ts";
 import { getProviderConnections, updateProviderConnection } from "@/lib/localDb";
 import {
@@ -9,6 +8,7 @@ import {
   getAllRateLimitStatus,
 } from "@omniroute/open-sse/services/rateLimitManager.ts";
 import { getAccountDisplayName } from "@/lib/display/names";
+import { buildActiveLockoutSnapshot } from "@/lib/monitoring/lockouts";
 
 import { toggleRateLimitSchema } from "@/shared/validation/schemas";
 import { isValidationFailure, validateBody } from "@/shared/validation/helpers";
@@ -19,20 +19,13 @@ function asRecord(value: unknown): JsonRecord {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : {};
 }
 
-function getScopedModelName(provider: unknown, model: unknown) {
-  const providerName = typeof provider === "string" && provider.trim() ? provider.trim() : "";
-  const modelName = typeof model === "string" && model.trim() ? model.trim() : "";
-  if (providerName && modelName) return `${providerName} / ${modelName}`;
-  return modelName || providerName || "unknown";
-}
-
 /**
  * GET /api/rate-limits — Consolidated rate-limit status
  *
  * Returns:
  * - Per-connection rate-limit status (protection toggle, current state)
  * - Global overview (all providers)
- * - Model lockouts
+ * - Active lockouts (account + model)
  * - Signature cache stats
  */
 export async function GET() {
@@ -61,12 +54,12 @@ export async function GET() {
         .filter((status) => status.connectionId)
         .map((status) => [status.connectionId, status.name])
     );
-    const lockouts = getAllModelLockouts().map((lockout) => ({
+    const lockouts = buildActiveLockoutSnapshot(connections).map((lockout) => ({
       ...lockout,
       accountName:
         connectionNames.get(lockout.connectionId) ||
+        lockout.accountName ||
         getAccountDisplayName({ id: lockout.connectionId }),
-      scopedModelName: getScopedModelName(lockout.provider, lockout.model),
     }));
     const cacheStats = getCacheStats();
 

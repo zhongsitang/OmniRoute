@@ -142,6 +142,19 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
         }
       }
 
+      if ("resetTimezone" in mergedPsd) {
+        if (typeof mergedPsd.resetTimezone === "string") {
+          const trimmedResetTimezone = mergedPsd.resetTimezone.trim();
+          if (trimmedResetTimezone) {
+            mergedPsd.resetTimezone = trimmedResetTimezone;
+          } else {
+            delete mergedPsd.resetTimezone;
+          }
+        } else if (mergedPsd.resetTimezone === null) {
+          delete mergedPsd.resetTimezone;
+        }
+      }
+
       updateData.providerSpecificData = mergedPsd;
     }
 

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isValidTimeZone } from "@/shared/utils/timezone";
 
 function isHttpUrl(value: string): boolean {
   try {
@@ -6,6 +7,24 @@ function isHttpUrl(value: string): boolean {
     return parsed.protocol === "http:" || parsed.protocol === "https:";
   } catch {
     return false;
+  }
+}
+
+function validateProviderSpecificTimezone(
+  data: Record<string, unknown> | undefined,
+  ctx: z.RefinementCtx
+) {
+  if (!data || !("resetTimezone" in data)) return;
+
+  const resetTimezone = data.resetTimezone;
+  if (resetTimezone === undefined || resetTimezone === null || resetTimezone === "") return;
+
+  if (!isValidTimeZone(resetTimezone)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "providerSpecificData.resetTimezone must be a valid IANA timezone",
+      path: ["resetTimezone"],
+    });
   }
 }
 
@@ -38,6 +57,7 @@ export const createProviderSchema = z.object({
           path: ["baseUrl"],
         });
       }
+      validateProviderSpecificTimezone(data, ctx);
     }),
 });
 
@@ -996,6 +1016,7 @@ export const updateProviderConnectionSchema = z
             path: ["baseUrl"],
           });
         }
+        validateProviderSpecificTimezone(data, ctx);
       }),
   })
   .superRefine((value, ctx) => {

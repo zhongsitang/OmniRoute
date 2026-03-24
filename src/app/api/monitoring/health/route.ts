@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCombos, getProviderConnections, getProviderNodes, getSettings } from "@/lib/localDb";
 import { APP_CONFIG } from "@/shared/constants/config";
+import { buildActiveLockoutSnapshot } from "@/lib/monitoring/lockouts";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -114,7 +115,6 @@ export async function GET() {
   try {
     const { getAllCircuitBreakerStatuses } = await import("@/shared/utils/circuitBreaker");
     const { getAllRateLimitStatus } = await import("@omniroute/open-sse/services/rateLimitManager");
-    const { getAllModelLockouts } = await import("@omniroute/open-sse/services/accountFallback");
     const { getInflightCount } = await import("@omniroute/open-sse/services/requestDedup.ts");
 
     const [settings, connections, providerNodes, combos] = await Promise.all([
@@ -125,7 +125,7 @@ export async function GET() {
     ]);
     const circuitBreakers = getAllCircuitBreakerStatuses();
     const rateLimitStatus = getAllRateLimitStatus();
-    const lockouts = getAllModelLockouts();
+    const lockouts = buildActiveLockoutSnapshot(connections);
     const { getAllHealthStatuses } = await import("@/lib/localHealthCheck");
     const { configuredProviders, configuredComboBreakers } = buildConfiguredBreakerSets(
       connections,

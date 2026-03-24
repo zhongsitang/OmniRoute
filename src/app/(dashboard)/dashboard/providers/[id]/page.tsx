@@ -36,6 +36,7 @@ import {
   MODEL_COMPAT_PROTOCOL_KEYS,
   type ModelCompatProtocolKey,
 } from "@/shared/constants/modelCompat";
+import { getCurrentTimeZone } from "@/shared/utils/timezone";
 
 type CompatByProtocolMap = Partial<
   Record<
@@ -314,7 +315,7 @@ interface AddApiKeyModalProps {
     name: string;
     apiKey: string;
     priority: number;
-    baseUrl?: string;
+    providerSpecificData?: Record<string, unknown>;
   }) => Promise<void | unknown>;
   onClose: () => void;
 }
@@ -3525,14 +3526,17 @@ function AddApiKeyModal({
   onClose,
 }: AddApiKeyModalProps) {
   const t = useTranslations("providers");
+  const tc = useTranslations("common");
   const isBailian = provider === "bailian-coding-plan";
   const defaultBailianUrl = "https://coding-intl.dashscope.aliyuncs.com/apps/anthropic/v1";
+  const currentTimeZone = getCurrentTimeZone();
 
   const [formData, setFormData] = useState({
     name: "",
     apiKey: "",
     priority: 1,
     baseUrl: isBailian ? defaultBailianUrl : "",
+    resetTimezone: "",
   });
   const [validating, setValidating] = useState(false);
   const [validationResult, setValidationResult] = useState(null);
@@ -3596,7 +3600,13 @@ function AddApiKeyModal({
         return;
       }
 
-      const payload = {
+      const payload: {
+        name: string;
+        apiKey: string;
+        priority: number;
+        testStatus: string;
+        providerSpecificData?: Record<string, unknown>;
+      } = {
         name: formData.name,
         apiKey: formData.apiKey,
         priority: formData.priority,
@@ -3604,11 +3614,22 @@ function AddApiKeyModal({
         providerSpecificData: undefined,
       };
 
+      const providerSpecificData: Record<string, unknown> = {};
+
       // Include baseUrl in providerSpecificData for bailian-coding-plan
       if (isBailian) {
-        payload.providerSpecificData = {
-          baseUrl: validatedBailianBaseUrl,
-        };
+        providerSpecificData.baseUrl = validatedBailianBaseUrl;
+      }
+
+      if (isCompatible) {
+        const resetTimezone = formData.resetTimezone.trim();
+        if (resetTimezone) {
+          providerSpecificData.resetTimezone = resetTimezone;
+        }
+      }
+
+      if (Object.keys(providerSpecificData).length > 0) {
+        payload.providerSpecificData = providerSpecificData;
       }
 
       const error = await onSave(payload);
@@ -3674,6 +3695,15 @@ function AddApiKeyModal({
                 })}
           </p>
         )}
+        {isCompatible && (
+          <Input
+            label={tc("scheduleTimezone")}
+            value={formData.resetTimezone}
+            onChange={(e) => setFormData({ ...formData, resetTimezone: e.target.value })}
+            placeholder={currentTimeZone}
+            hint={tc("scheduleTimezoneHint")}
+          />
+        )}
         <Input
           label={t("priorityLabel")}
           type="number"
@@ -3733,12 +3763,15 @@ function normalizeAndValidateHttpBaseUrl(rawValue, fallbackUrl) {
 
 function EditConnectionModal({ isOpen, connection, onSave, onClose }: EditConnectionModalProps) {
   const t = useTranslations("providers");
+  const tc = useTranslations("common");
+  const currentTimeZone = getCurrentTimeZone();
   const [formData, setFormData] = useState({
     name: "",
     priority: 1,
     apiKey: "",
     healthCheckInterval: 60,
     baseUrl: "",
+    resetTimezone: "",
   });
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
@@ -3756,12 +3789,15 @@ function EditConnectionModal({ isOpen, connection, onSave, onClose }: EditConnec
     if (connection) {
       const rawBaseUrl = connection.providerSpecificData?.baseUrl;
       const existingBaseUrl = typeof rawBaseUrl === "string" ? rawBaseUrl : "";
+      const rawResetTimezone = connection.providerSpecificData?.resetTimezone;
+      const existingResetTimezone = typeof rawResetTimezone === "string" ? rawResetTimezone : "";
       setFormData({
         name: connection.name || "",
         priority: connection.priority || 1,
         apiKey: "",
         healthCheckInterval: connection.healthCheckInterval ?? 60,
         baseUrl: existingBaseUrl || (isBailian ? defaultBailianUrl : ""),
+        resetTimezone: existingResetTimezone,
       });
       // Load existing extra keys from providerSpecificData
       const existing = connection.providerSpecificData?.extraApiKeys;
@@ -3876,6 +3912,10 @@ function EditConnectionModal({ isOpen, connection, onSave, onClose }: EditConnec
         if (isBailian) {
           updates.providerSpecificData.baseUrl = validatedBailianBaseUrl;
         }
+        if (isCompatible) {
+          const resetTimezone = formData.resetTimezone.trim();
+          updates.providerSpecificData.resetTimezone = resetTimezone || null;
+        }
       }
       const error = (await onSave(updates)) as void | unknown;
       if (error) {
@@ -3976,6 +4016,15 @@ function EditConnectionModal({ isOpen, connection, onSave, onClose }: EditConnec
             onChange={(e) => setFormData({ ...formData, baseUrl: e.target.value })}
             placeholder={defaultBailianUrl}
             hint="Custom base URL for bailian-coding-plan provider"
+          />
+        )}
+        {isCompatible && !isOAuth && (
+          <Input
+            label={tc("scheduleTimezone")}
+            value={formData.resetTimezone}
+            onChange={(e) => setFormData({ ...formData, resetTimezone: e.target.value })}
+            placeholder={currentTimeZone}
+            hint={tc("scheduleTimezoneHint")}
           />
         )}
 

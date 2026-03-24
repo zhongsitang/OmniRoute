@@ -5,29 +5,47 @@ import { useTranslations } from "next-intl";
 import { useState, useEffect, useCallback } from "react";
 import { Card } from "@/shared/components";
 
+type LockoutEntry = {
+  key?: string;
+  scope?: "account" | "model";
+  provider?: string;
+  providerDisplayName?: string;
+  connectionId?: string;
+  accountName?: string;
+  scopedModelName?: string;
+  reason?: string | null;
+  remainingMs?: number;
+};
+
 export default function RateLimitStatus() {
   const t = useTranslations("usage");
   const tc = useTranslations("common");
-  const [data, setData] = useState({ lockouts: [], cacheStats: null });
-  const [loading, setLoading] = useState(true);
+  const [data, setData] = useState<{ lockouts: LockoutEntry[]; cacheStats: unknown | null }>({
+    lockouts: [],
+    cacheStats: null,
+  });
 
   const load = useCallback(async () => {
     try {
       const res = await fetch("/api/rate-limits");
       if (res.ok) setData(await res.json());
-    } catch {
-    } finally {
-      setLoading(false);
-    }
+    } catch {}
   }, []);
 
   useEffect(() => {
-    load();
-    const interval = setInterval(load, 10000);
-    return () => clearInterval(interval);
+    const initialLoad = setTimeout(() => {
+      void load();
+    }, 0);
+    const interval = setInterval(() => {
+      void load();
+    }, 10000);
+    return () => {
+      clearTimeout(initialLoad);
+      clearInterval(interval);
+    };
   }, [load]);
 
-  const formatMs = (ms) => {
+  const formatMs = (ms: number) => {
     if (ms < 1000) return t("durationMillisecondsShort", { value: ms });
     if (ms < 60000) return t("durationSecondsShort", { value: Math.ceil(ms / 1000) });
     return t("durationMinutesShort", { value: Math.ceil(ms / 60000) });
@@ -68,7 +86,7 @@ export default function RateLimitStatus() {
           <div className="flex flex-col gap-2">
             {data.lockouts.map((lock, i) => (
               <div
-                key={i}
+                key={lock.key || `${lock.connectionId || lock.provider || "lockout"}:${i}`}
                 className="flex items-center justify-between px-3 py-2.5 rounded-lg
                            bg-orange-500/5 border border-orange-500/15"
               >
@@ -77,15 +95,35 @@ export default function RateLimitStatus() {
                     className="material-symbols-outlined text-[16px] text-orange-400"
                     aria-hidden="true"
                   >
-                    lock
+                    {lock.scope === "account" ? "lock_person" : "lock"}
                   </span>
                   <div>
                     <p className="text-sm font-medium break-all">
-                      {lock.scopedModelName || `${lock.provider || tc("unknown")} / ${lock.model}`}
+                      {lock.scopedModelName ||
+                        lock.providerDisplayName ||
+                        lock.provider ||
+                        tc("unknown")}
                     </p>
                     <p className="text-xs text-text-muted">
-                      {t("account")}:{" "}
-                      <span className="font-medium">{lock.accountName || tc("none")}</span>
+                      {lock.scope === "account" ? (
+                        <>
+                          <span className="font-medium">
+                            {lock.providerDisplayName || lock.provider || tc("unknown")}
+                          </span>
+                          {lock.accountName && lock.accountName !== lock.providerDisplayName && (
+                            <>
+                              {t("reasonSeparator")}
+                              {t("account")}:{" "}
+                              <span className="font-medium">{lock.accountName}</span>
+                            </>
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          {t("account")}:{" "}
+                          <span className="font-medium">{lock.accountName || tc("none")}</span>
+                        </>
+                      )}
                       {lock.connectionId && (
                         <>
                           {t("reasonSeparator")}
@@ -102,7 +140,7 @@ export default function RateLimitStatus() {
                   </div>
                 </div>
                 <span className="text-xs font-mono tabular-nums text-orange-400">
-                  {t("timeLeft", { time: formatMs(lock.remainingMs) })}
+                  {t("timeLeft", { time: formatMs(lock.remainingMs || 0) })}
                 </span>
               </div>
             ))}

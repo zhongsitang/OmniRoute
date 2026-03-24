@@ -172,6 +172,7 @@ CREATE TABLE IF NOT EXISTS domain_cost_history (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   api_key_id TEXT NOT NULL,
   cost REAL NOT NULL,
+  source TEXT DEFAULT NULL,
   timestamp INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_dch_key ON domain_cost_history(api_key_id);

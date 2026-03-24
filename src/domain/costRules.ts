@@ -9,15 +9,8 @@
  * @module domain/costRules
  */
 
-import {
-  saveBudget,
-  loadBudget,
-  saveCostEntry,
-  loadCostEntries,
-  deleteAllCostData,
-  deleteBudget as dbDeleteBudget,
-  deleteCostEntries,
-} from "../lib/db/domainState";
+import { saveBudget, loadBudget, saveCostEntry, deleteAllCostData } from "../lib/db/domainState";
+import { getDbInstance } from "../lib/db/core";
 
 interface BudgetConfig {
   dailyLimitUsd: number;
@@ -25,24 +18,60 @@ interface BudgetConfig {
   warningThreshold?: number;
 }
 
-interface CostEntry {
-  cost: number;
-  timestamp: number;
+const AUXILIARY_COST_SOURCE = "aux";
+
+function toNumber(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
 }
 
-function toCostEntries(value: unknown): CostEntry[] {
-  if (!Array.isArray(value)) return [];
-  const entries: CostEntry[] = [];
-  for (const item of value) {
-    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
-    const record = item as Record<string, unknown>;
-    const cost = typeof record.cost === "number" ? record.cost : Number(record.cost ?? 0);
-    const timestamp =
-      typeof record.timestamp === "number" ? record.timestamp : Number(record.timestamp ?? 0);
-    if (!Number.isFinite(cost) || !Number.isFinite(timestamp)) continue;
-    entries.push({ cost, timestamp });
-  }
-  return entries;
+function getCostWindowBreakdown(apiKeyId: string, sinceTimestamp: number) {
+  const db = getDbInstance();
+  const sinceIso = new Date(sinceTimestamp).toISOString();
+
+  const usageSummary = db
+    .prepare(
+      `
+      SELECT
+        COUNT(*) AS entry_count,
+        COALESCE(SUM(cost_usd), 0) AS total_cost
+      FROM usage_history
+      WHERE api_key_id = ?
+        AND timestamp >= ?
+        AND cost_usd IS NOT NULL
+    `
+    )
+    .get(apiKeyId, sinceIso) as { entry_count?: unknown; total_cost?: unknown } | undefined;
+
+  const auxiliarySummary = db
+    .prepare(
+      `
+      SELECT
+        COUNT(*) AS entry_count,
+        COALESCE(SUM(cost), 0) AS total_cost
+      FROM domain_cost_history
+      WHERE api_key_id = ?
+        AND timestamp >= ?
+        AND source = ?
+    `
+    )
+    .get(apiKeyId, sinceTimestamp, AUXILIARY_COST_SOURCE) as
+    | { entry_count?: unknown; total_cost?: unknown }
+    | undefined;
+
+  const usageEntries = toNumber(usageSummary?.entry_count);
+  const usageTotal = toNumber(usageSummary?.total_cost);
+  const auxiliaryEntries = toNumber(auxiliarySummary?.entry_count);
+  const auxiliaryTotal = toNumber(auxiliarySummary?.total_cost);
+
+  return {
+    total: usageTotal + auxiliaryTotal,
+    totalEntries: usageEntries + auxiliaryEntries,
+  };
 }
 
 /**
@@ -117,7 +146,7 @@ export function getBudget(apiKeyId: string): BudgetConfig | null {
 export function recordCost(apiKeyId: string, cost: number): void {
   const timestamp = Date.now();
   try {
-    saveCostEntry(apiKeyId, cost, timestamp);
+    saveCostEntry(apiKeyId, cost, timestamp, AUXILIARY_COST_SOURCE);
   } catch {
     // Non-critical
   }
@@ -133,12 +162,13 @@ export function recordCost(apiKeyId: string, cost: number): void {
 export function checkBudget(apiKeyId: string, additionalCost = 0) {
   const budget = getBudget(apiKeyId);
   if (!budget) {
-    return { allowed: true, dailyUsed: 0, dailyLimit: 0, warningReached: false };
+    return { allowed: true, dailyUsed: 0, dailyLimit: 0, warningReached: false, remaining: 0 };
   }
 
   const dailyUsed = getDailyTotal(apiKeyId);
   const projectedTotal = dailyUsed + additionalCost;
   const warningReached = projectedTotal >= budget.dailyLimitUsd * budget.warningThreshold;
+  const remaining = Math.max(0, budget.dailyLimitUsd - projectedTotal);
 
   if (projectedTotal > budget.dailyLimitUsd) {
     return {
@@ -147,6 +177,7 @@ export function checkBudget(apiKeyId: string, additionalCost = 0) {
       dailyUsed,
       dailyLimit: budget.dailyLimitUsd,
       warningReached: true,
+      remaining: 0,
     };
   }
 
@@ -155,6 +186,7 @@ export function checkBudget(apiKeyId: string, additionalCost = 0) {
     dailyUsed,
     dailyLimit: budget.dailyLimitUsd,
     warningReached,
+    remaining,
   };
 }
 
@@ -170,8 +202,7 @@ export function getDailyTotal(apiKeyId: string): number {
   const startMs = todayStart.getTime();
 
   try {
-    const entries = toCostEntries(loadCostEntries(apiKeyId, startMs));
-    return entries.reduce((sum, e) => sum + e.cost, 0);
+    return getCostWindowBreakdown(apiKeyId, startMs).total;
   } catch {
     return 0;
   }
@@ -192,22 +223,23 @@ export function getCostSummary(apiKeyId: string) {
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
 
   try {
-    const dailyEntries = toCostEntries(loadCostEntries(apiKeyId, todayStart.getTime()));
-    const monthlyEntries = toCostEntries(loadCostEntries(apiKeyId, monthStart.getTime()));
-
-    const dailyTotal = dailyEntries.reduce((sum, e) => sum + e.cost, 0);
-    const monthlyTotal = monthlyEntries.reduce((sum, e) => sum + e.cost, 0);
+    const dailySummary = getCostWindowBreakdown(apiKeyId, todayStart.getTime());
+    const monthlySummary = getCostWindowBreakdown(apiKeyId, monthStart.getTime());
 
     return {
-      dailyTotal,
-      monthlyTotal,
-      totalEntries: monthlyEntries.length,
+      dailyTotal: dailySummary.total,
+      monthlyTotal: monthlySummary.total,
+      totalCostToday: dailySummary.total,
+      totalCostMonth: monthlySummary.total,
+      totalEntries: monthlySummary.totalEntries,
       budget: getBudget(apiKeyId),
     };
   } catch {
     return {
       dailyTotal: 0,
       monthlyTotal: 0,
+      totalCostToday: 0,
+      totalCostMonth: 0,
       totalEntries: 0,
       budget: getBudget(apiKeyId),
     };

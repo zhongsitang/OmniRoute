@@ -72,7 +72,11 @@ function shortModelName(model: string) {
  * @param {Object} connectionMap - Map of connectionId → account name
  * @returns {Object} Analytics data
  */
-export async function computeAnalytics(history: any[], range = "30d", connectionMap: Record<string, string> = {}) {
+export async function computeAnalytics(
+  history: any[],
+  range = "30d",
+  connectionMap: Record<string, string> = {}
+) {
   const { start, end } = getDateRange(range);
 
   // ---- Filtered entries ----
@@ -137,7 +141,12 @@ export async function computeAnalytics(history: any[], range = "30d", connection
     // Cost
     let cost = 0;
     try {
-      cost = await calculateCost(entry.provider, entry.model, entry.tokens);
+      cost =
+        typeof entry.costUsd === "number" && Number.isFinite(entry.costUsd)
+          ? entry.costUsd
+          : await calculateCost(entry.provider, entry.model, entry.tokens, {
+              serviceTier: entry.serviceTier || null,
+            });
     } catch {
       /* ignore */
     }

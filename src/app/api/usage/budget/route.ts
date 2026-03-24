@@ -12,7 +12,16 @@ export async function GET(request) {
     }
     const summary = getCostSummary(apiKeyId);
     const budgetCheck = checkBudget(apiKeyId);
-    return NextResponse.json({ ...summary, budgetCheck });
+    const budget = summary.budget || null;
+    return NextResponse.json({
+      ...summary,
+      budgetCheck,
+      dailyLimitUsd: budget?.dailyLimitUsd || 0,
+      monthlyLimitUsd: budget?.monthlyLimitUsd || 0,
+      warningThreshold: budget?.warningThreshold ?? 0.8,
+      totalCostToday: summary.totalCostToday ?? summary.dailyTotal ?? 0,
+      totalCostMonth: summary.totalCostMonth ?? summary.monthlyTotal ?? 0,
+    });
   } catch (error) {
     console.error("Error fetching budget summary:", error);
     return NextResponse.json({ error: "Failed to fetch budget summary" }, { status: 500 });

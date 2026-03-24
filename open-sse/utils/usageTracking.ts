@@ -3,7 +3,8 @@
  */
 
 import { saveRequestUsage, appendRequestLog } from "@/lib/usageDb";
-import { recordUsageCost } from "@/lib/usage/costTracking";
+import { calculateUsageCost } from "@/lib/usage/costTracking";
+import { normalizeServiceTier } from "@/lib/usage/serviceTier";
 import { FORMATS } from "../translator/formats.ts";
 
 // ANSI color codes
@@ -168,15 +169,10 @@ function getCacheMetrics(usage) {
         : null;
 
   const cacheRead = Number(
-    usage.cache_read_input_tokens ??
-      usage.cached_tokens ??
-      promptDetails?.cached_tokens ??
-      0
+    usage.cache_read_input_tokens ?? usage.cached_tokens ?? promptDetails?.cached_tokens ?? 0
   );
   const cacheCreation = Number(
-    usage.cache_creation_input_tokens ??
-      promptDetails?.cache_creation_tokens ??
-      0
+    usage.cache_creation_input_tokens ?? promptDetails?.cache_creation_tokens ?? 0
   );
 
   return {
@@ -186,8 +182,8 @@ function getCacheMetrics(usage) {
       usage.cached_tokens !== undefined ||
       Boolean(
         promptDetails &&
-          (promptDetails.cached_tokens !== undefined ||
-            promptDetails.cache_creation_tokens !== undefined)
+        (promptDetails.cached_tokens !== undefined ||
+          promptDetails.cache_creation_tokens !== undefined)
       ),
   };
 }
@@ -422,7 +418,14 @@ export function estimateUsage(body, contentLength, targetFormat = FORMATS.OPENAI
 /**
  * Log usage with cache info (green color)
  */
-export function logUsage(provider, usage, model = null, connectionId = null, apiKeyInfo = null) {
+export async function logUsage(
+  provider,
+  usage,
+  model = null,
+  connectionId = null,
+  apiKeyInfo = null,
+  options = {}
+) {
   if (!usage || typeof usage !== "object") return;
 
   const p = provider?.toUpperCase() || "UNKNOWN";
@@ -460,6 +463,9 @@ export function logUsage(provider, usage, model = null, connectionId = null, api
     cacheCreation: cacheCreation || 0,
     reasoning: reasoning || 0,
   };
+  const serviceTier = normalizeServiceTier(options.serviceTier);
+  const costUsd = await calculateUsageCost(provider, model, usage, { serviceTier }).catch(() => 0);
+
   saveRequestUsage({
     model,
     provider,
@@ -467,7 +473,8 @@ export function logUsage(provider, usage, model = null, connectionId = null, api
     apiKeyId: apiKeyInfo?.id || undefined,
     apiKeyName: apiKeyInfo?.name || undefined,
     tokens,
+    serviceTier,
+    costUsd: Number.isFinite(Number(costUsd)) ? Number(costUsd) : null,
   }).catch(() => {});
-  void recordUsageCost(apiKeyInfo, provider, model, usage).catch(() => {});
   appendRequestLog({ model, provider, connectionId, tokens, status: "200 OK" }).catch(() => {});
 }

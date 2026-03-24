@@ -1,5 +1,5 @@
-import { recordCost } from "../../domain/costRules";
 import { calculateCost } from "./costCalculator";
+import { normalizeServiceTier } from "./serviceTier";
 
 function toNumber(value: unknown, fallback = 0): number {
   if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -25,9 +25,7 @@ function getCacheMetrics(usage: Record<string, unknown>) {
       promptDetails.cached_tokens
   );
   const cacheCreation = toNumber(
-    usage.cacheCreation ??
-      usage.cache_creation_input_tokens ??
-      promptDetails.cache_creation_tokens
+    usage.cacheCreation ?? usage.cache_creation_input_tokens ?? promptDetails.cache_creation_tokens
   );
 
   return {
@@ -72,13 +70,29 @@ export function normalizeUsageToCostTokens(usage: unknown) {
   };
 }
 
-export async function recordUsageCost(apiKeyInfo: any, provider: string, model: string, usage: unknown) {
-  if (!apiKeyInfo?.id || !provider || !model) return 0;
+export async function calculateUsageCost(
+  provider: string,
+  model: string,
+  usage: unknown,
+  options: Record<string, unknown> = {}
+) {
+  if (!provider || !model) return 0;
 
   const tokens = normalizeUsageToCostTokens(usage);
   if (!tokens) return 0;
 
-  const cost = await calculateCost(provider, model, tokens);
-  if (cost > 0) recordCost(apiKeyInfo.id, cost);
-  return cost;
+  return calculateCost(provider, model, tokens, {
+    serviceTier: normalizeServiceTier(options.serviceTier),
+  });
+}
+
+export async function recordUsageCost(
+  apiKeyInfo: any,
+  provider: string,
+  model: string,
+  usage: unknown,
+  options: Record<string, unknown> = {}
+) {
+  void apiKeyInfo;
+  return calculateUsageCost(provider, model, usage, options);
 }

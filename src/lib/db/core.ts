@@ -218,6 +218,7 @@ const SCHEMA_SQL = `
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     api_key_id TEXT NOT NULL,
     cost REAL NOT NULL,
+    source TEXT DEFAULT NULL,
     timestamp INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_dch_key ON domain_cost_history(api_key_id);
@@ -376,6 +377,26 @@ function ensureUsageHistoryColumns(db: SqliteDatabase) {
   }
 }
 
+function ensureDomainCostHistoryColumns(db: SqliteDatabase) {
+  try {
+    const columns = db.prepare("PRAGMA table_info(domain_cost_history)").all() as Array<{
+      name?: string;
+    }>;
+    const columnNames = new Set(columns.map((column) => String(column.name ?? "")));
+
+    if (!columnNames.has("source")) {
+      db.exec("ALTER TABLE domain_cost_history ADD COLUMN source TEXT DEFAULT NULL");
+      console.log("[DB] Added domain_cost_history.source column");
+    }
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("duplicate column name: source")) {
+      return;
+    }
+    console.warn("[DB] Failed to verify domain_cost_history schema:", message);
+  }
+}
+
 export function getDbInstance(): SqliteDatabase {
   const existing = getDb();
   if (existing) return existing;
@@ -388,6 +409,7 @@ export function getDbInstance(): SqliteDatabase {
     memoryDb.pragma("journal_mode = WAL");
     memoryDb.exec(SCHEMA_SQL);
     ensureUsageHistoryColumns(memoryDb);
+    ensureDomainCostHistoryColumns(memoryDb);
     setDb(memoryDb);
     return memoryDb;
   }
@@ -480,6 +502,7 @@ export function getDbInstance(): SqliteDatabase {
   db.exec(SCHEMA_SQL);
   ensureProviderConnectionsColumns(db);
   ensureUsageHistoryColumns(db);
+  ensureDomainCostHistoryColumns(db);
 
   // ── Versioned Migrations ──
   // Auto-seed 001 as applied (the inline SCHEMA_SQL already created these tables)

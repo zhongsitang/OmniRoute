@@ -27,6 +27,12 @@ function toNumber(value: unknown): number {
   return 0;
 }
 
+function toNumberOrNull(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = toNumber(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function toStringOrEmpty(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
@@ -121,7 +127,12 @@ export async function getUsageStats() {
       cacheCreation: toNumber(row.tokens_cache_creation),
       reasoning: toNumber(row.tokens_reasoning),
     };
-    const entryCost = await calculateCost(provider, model, entryTokens);
+    const storedCost = toNumberOrNull(row.cost_usd);
+    const entryCost =
+      storedCost ??
+      (await calculateCost(provider, model, entryTokens, {
+        serviceTier: toStringOrEmpty(row.service_tier) || null,
+      }));
 
     stats.totalPromptTokens += promptTokens;
     stats.totalCompletionTokens += completionTokens;

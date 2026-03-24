@@ -7,6 +7,12 @@
  * @module lib/usage/costCalculator
  */
 
+import {
+  isCodexFastServiceTier,
+  normalizeBillingModelName,
+  normalizeServiceTier,
+} from "./serviceTier";
+
 /**
  * Normalize model name — strip provider path prefixes.
  * Examples:
@@ -19,9 +25,7 @@
  * @returns {string}
  */
 function normalizeModelName(model) {
-  if (!model || !model.includes("/")) return model;
-  const parts = model.split("/");
-  return parts[parts.length - 1];
+  return normalizeBillingModelName(model);
 }
 
 function toNumber(value: unknown, fallback = 0): number {
@@ -39,9 +43,15 @@ function toNumber(value: unknown, fallback = 0): number {
  * @param {string} provider
  * @param {string} model
  * @param {Object} tokens
+ * @param {Object} [options]
  * @returns {Promise<number>} Cost in USD
  */
-export async function calculateCost(provider, model, tokens) {
+export async function calculateCost(
+  provider,
+  model,
+  tokens,
+  options: Record<string, unknown> = {}
+) {
   if (!tokens || !provider || !model) return 0;
 
   try {
@@ -100,6 +110,10 @@ export async function calculateCost(provider, model, tokens) {
 
     if (cacheCreationTokens > 0) {
       cost += cacheCreationTokens * (cacheCreationPrice / 1000000);
+    }
+
+    if (isCodexFastServiceTier(provider, model, normalizeServiceTier(options.serviceTier))) {
+      cost *= 2;
     }
 
     return cost;

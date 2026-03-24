@@ -87,3 +87,73 @@ test("normalizeUsageToCostTokens expands provider formats that report cache sepa
     reasoning: 5,
   });
 });
+
+test("calculateCost doubles Codex fast-tier requests", async () => {
+  await resetStorage();
+
+  const normal = await calculateCost(
+    "codex",
+    "gpt-5.4",
+    {
+      input: 1_000,
+      output: 100,
+    },
+    {
+      serviceTier: null,
+    }
+  );
+  const fast = await calculateCost(
+    "codex",
+    "gpt-5.4",
+    {
+      input: 1_000,
+      output: 100,
+    },
+    {
+      serviceTier: "priority",
+    }
+  );
+
+  assert.equal(fast, normal * 2);
+});
+
+test("calculateCost doubles priority gpt-5.4 requests for openai-compatible providers", async () => {
+  await resetStorage();
+
+  const provider = "openai-compatible-responses-test";
+  await settingsDb.updatePricing({
+    [provider]: {
+      "gpt-5.4": {
+        input: 2.5,
+        cached: 0.25,
+        output: 15,
+      },
+    },
+  });
+
+  const normal = await calculateCost(
+    provider,
+    "gpt-5.4",
+    {
+      input: 1_000,
+      output: 100,
+    },
+    {
+      serviceTier: null,
+    }
+  );
+  const fast = await calculateCost(
+    provider,
+    "gpt-5.4",
+    {
+      input: 1_000,
+      output: 100,
+    },
+    {
+      serviceTier: "priority",
+    }
+  );
+
+  assert.equal(normal, 0.004);
+  assert.equal(fast, 0.008);
+});

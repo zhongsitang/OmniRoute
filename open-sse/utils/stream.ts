@@ -48,6 +48,7 @@ type StreamOptions = {
   connectionId?: string | null;
   apiKeyInfo?: unknown;
   body?: unknown;
+  serviceTier?: string | null;
   idleTimeoutMs?: number | null;
   onComplete?: ((payload: StreamCompletePayload) => void) | null;
 };
@@ -121,6 +122,7 @@ export function createSSEStream(options: StreamOptions = {}) {
     connectionId = null,
     apiKeyInfo = null,
     body = null,
+    serviceTier = null,
     idleTimeoutMs: configuredIdleTimeoutMs = null,
     onComplete = null,
   } = options;
@@ -494,7 +496,9 @@ export function createSSEStream(options: StreamOptions = {}) {
             }
 
             if (hasValidUsage(usage)) {
-              logUsage(provider, usage, model, connectionId, apiKeyInfo);
+              void logUsage(provider, usage, model, connectionId, apiKeyInfo, {
+                serviceTier,
+              }).catch(() => {});
             } else {
               appendRequestLog({
                 model,
@@ -623,7 +627,16 @@ export function createSSEStream(options: StreamOptions = {}) {
           }
 
           if (hasValidUsage(state?.usage)) {
-            logUsage(state.provider || targetFormat, state.usage, model, connectionId, apiKeyInfo);
+            void logUsage(
+              state.provider || targetFormat,
+              state.usage,
+              model,
+              connectionId,
+              apiKeyInfo,
+              {
+                serviceTier,
+              }
+            ).catch(() => {});
           } else {
             appendRequestLog({
               model,
@@ -683,7 +696,8 @@ export function createSSETransformStreamWithLogger(
   body: unknown = null,
   onComplete: ((payload: StreamCompletePayload) => void) | null = null,
   apiKeyInfo: unknown = null,
-  idleTimeoutMs: number | null = null
+  idleTimeoutMs: number | null = null,
+  serviceTier: string | null = null
 ) {
   return createSSEStream({
     mode: STREAM_MODE.TRANSLATE,
@@ -696,6 +710,7 @@ export function createSSETransformStreamWithLogger(
     connectionId,
     apiKeyInfo,
     body,
+    serviceTier,
     idleTimeoutMs,
     onComplete,
   });
@@ -709,7 +724,8 @@ export function createPassthroughStreamWithLogger(
   body: unknown = null,
   onComplete: ((payload: StreamCompletePayload) => void) | null = null,
   apiKeyInfo: unknown = null,
-  idleTimeoutMs: number | null = null
+  idleTimeoutMs: number | null = null,
+  serviceTier: string | null = null
 ) {
   return createSSEStream({
     mode: STREAM_MODE.PASSTHROUGH,
@@ -719,6 +735,7 @@ export function createPassthroughStreamWithLogger(
     connectionId,
     apiKeyInfo,
     body,
+    serviceTier,
     idleTimeoutMs,
     onComplete,
   });

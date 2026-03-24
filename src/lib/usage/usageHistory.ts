@@ -29,6 +29,12 @@ function toNumber(value: unknown): number {
   return 0;
 }
 
+function toNumberOrNull(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = toNumber(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function percentile(sortedValues: number[], p: number): number {
   if (sortedValues.length === 0) return 0;
   if (sortedValues.length === 1) return sortedValues[0];
@@ -125,6 +131,8 @@ export async function getUsageDb() {
       latencyMs: toNumber(r.latency_ms),
       timeToFirstTokenMs: toNumber(r.ttft_ms),
       errorCode: toStringOrNull(r.error_code),
+      serviceTier: toStringOrNull(r.service_tier),
+      costUsd: toNumberOrNull(r.cost_usd),
       timestamp: toStringOrNull(r.timestamp),
     };
   });
@@ -148,8 +156,8 @@ export async function saveRequestUsage(entry: any) {
       `
       INSERT INTO usage_history (provider, model, connection_id, api_key_id, api_key_name,
         tokens_input, tokens_output, tokens_cache_read, tokens_cache_creation, tokens_reasoning,
-        status, success, latency_ms, ttft_ms, error_code, timestamp)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        status, success, latency_ms, ttft_ms, error_code, service_tier, cost_usd, timestamp)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `
     ).run(
       entry.provider || null,
@@ -171,6 +179,8 @@ export async function saveRequestUsage(entry: any) {
           ? Number(entry.latencyMs)
           : 0,
       entry.errorCode || null,
+      entry.serviceTier || null,
+      Number.isFinite(Number(entry.costUsd)) ? Number(entry.costUsd) : null,
       timestamp
     );
   } catch (error) {
@@ -232,6 +242,8 @@ export async function getUsageHistory(filter: any = {}) {
       latencyMs: toNumber(r.latency_ms),
       timeToFirstTokenMs: toNumber(r.ttft_ms),
       errorCode: toStringOrNull(r.error_code),
+      serviceTier: toStringOrNull(r.service_tier),
+      costUsd: toNumberOrNull(r.cost_usd),
       timestamp: toStringOrNull(r.timestamp),
     };
   });

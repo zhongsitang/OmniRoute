@@ -144,27 +144,26 @@ export function deleteBudget(apiKeyId) {
  * @param {string} apiKeyId
  * @param {number} cost
  * @param {number} [timestamp]
+ * @param {string|null} [source]
  */
-export function saveCostEntry(apiKeyId, cost, timestamp = Date.now()) {
+export function saveCostEntry(apiKeyId, cost, timestamp = Date.now(), source = null) {
   const db = getDbInstance();
-  db.prepare("INSERT INTO domain_cost_history (api_key_id, cost, timestamp) VALUES (?, ?, ?)").run(
-    apiKeyId,
-    cost,
-    timestamp
-  );
+  db.prepare(
+    "INSERT INTO domain_cost_history (api_key_id, cost, source, timestamp) VALUES (?, ?, ?, ?)"
+  ).run(apiKeyId, cost, source, timestamp);
 }
 
 /**
  * Load cost entries for an API key within a time window.
  * @param {string} apiKeyId
  * @param {number} sinceTimestamp
- * @returns {Array<{cost: number, timestamp: number}>}
+ * @returns {Array<{cost: number, source: string|null, timestamp: number}>}
  */
 export function loadCostEntries(apiKeyId, sinceTimestamp) {
   const db = getDbInstance();
   return db
     .prepare(
-      "SELECT cost, timestamp FROM domain_cost_history WHERE api_key_id = ? AND timestamp >= ? ORDER BY timestamp"
+      "SELECT cost, source, timestamp FROM domain_cost_history WHERE api_key_id = ? AND timestamp >= ? ORDER BY timestamp"
     )
     .all(apiKeyId, sinceTimestamp);
 }

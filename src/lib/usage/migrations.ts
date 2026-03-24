@@ -11,6 +11,11 @@ import path from "path";
 import fs from "fs";
 import { getDbInstance, isCloud, isBuildPhase, DATA_DIR } from "../db/core";
 import { getLegacyDotDataDir, isSamePath } from "../dataPaths";
+import {
+  CODEX_FAST_SERVICE_TIER,
+  isHistoricalGpt54FastModel,
+  normalizeServiceTier,
+} from "./serviceTier";
 
 export const shouldPersistToDisk = !isCloud && !isBuildPhase;
 
@@ -81,14 +86,17 @@ export function migrateUsageJsonToSqlite() {
         const insert = db.prepare(`
           INSERT INTO usage_history (provider, model, connection_id, api_key_id, api_key_name,
             tokens_input, tokens_output, tokens_cache_read, tokens_cache_creation, tokens_reasoning,
-            status, success, latency_ms, ttft_ms, error_code, timestamp)
+            status, success, latency_ms, ttft_ms, error_code, service_tier, cost_usd, timestamp)
           VALUES (@provider, @model, @connectionId, @apiKeyId, @apiKeyName,
             @tokensInput, @tokensOutput, @tokensCacheRead, @tokensCacheCreation, @tokensReasoning,
-            @status, @success, @latencyMs, @ttftMs, @errorCode, @timestamp)
+            @status, @success, @latencyMs, @ttftMs, @errorCode, @serviceTier, @costUsd, @timestamp)
         `);
 
         const tx = db.transaction(() => {
           for (const entry of history) {
+            const serviceTier =
+              normalizeServiceTier(entry.serviceTier ?? entry.service_tier) ??
+              (isHistoricalGpt54FastModel(entry.model) ? CODEX_FAST_SERVICE_TIER : null);
             insert.run({
               provider: entry.provider || null,
               model: entry.model || null,
@@ -110,6 +118,11 @@ export function migrateUsageJsonToSqlite() {
                   ? Number(entry.latencyMs)
                   : 0,
               errorCode: entry.errorCode || null,
+              serviceTier,
+              costUsd:
+                typeof entry.costUsd === "number" && Number.isFinite(entry.costUsd)
+                  ? entry.costUsd
+                  : null,
               timestamp: entry.timestamp || new Date().toISOString(),
             });
           }
@@ -137,14 +150,17 @@ export function migrateUsageJsonToSqlite() {
         const insert = db.prepare(`
           INSERT OR IGNORE INTO call_logs (id, timestamp, method, path, status, model, provider,
             account, connection_id, duration, tokens_in, tokens_out, source_format, target_format,
-            api_key_id, api_key_name, combo_name, request_body, response_body, error)
+            api_key_id, api_key_name, combo_name, service_tier, cost_usd, request_body, response_body, error)
           VALUES (@id, @timestamp, @method, @path, @status, @model, @provider,
             @account, @connectionId, @duration, @tokensIn, @tokensOut, @sourceFormat, @targetFormat,
-            @apiKeyId, @apiKeyName, @comboName, @requestBody, @responseBody, @error)
+            @apiKeyId, @apiKeyName, @comboName, @serviceTier, @costUsd, @requestBody, @responseBody, @error)
         `);
 
         const tx = db.transaction(() => {
           for (const log of logs) {
+            const serviceTier =
+              normalizeServiceTier(log.serviceTier ?? log.service_tier) ??
+              (isHistoricalGpt54FastModel(log.model) ? CODEX_FAST_SERVICE_TIER : null);
             insert.run({
               id: log.id || `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
               timestamp: log.timestamp || new Date().toISOString(),
@@ -163,6 +179,11 @@ export function migrateUsageJsonToSqlite() {
               apiKeyId: log.apiKeyId || null,
               apiKeyName: log.apiKeyName || null,
               comboName: log.comboName || null,
+              serviceTier,
+              costUsd:
+                typeof log.costUsd === "number" && Number.isFinite(log.costUsd)
+                  ? log.costUsd
+                  : null,
               requestBody: log.requestBody ? JSON.stringify(log.requestBody) : null,
               responseBody: log.responseBody ? JSON.stringify(log.responseBody) : null,
               error: log.error || null,

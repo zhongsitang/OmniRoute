@@ -122,6 +122,22 @@ export async function registerNodejs(): Promise<void> {
   }
 
   try {
+    const { reconcileStoredUsageBilling } = await import("@/lib/usage/billingReconciliation");
+    const reconciliation = await reconcileStoredUsageBilling();
+    if (
+      reconciliation.usageServiceTierUpdated > 0 ||
+      reconciliation.callLogServiceTierUpdated > 0 ||
+      reconciliation.usageCostBackfilled > 0 ||
+      reconciliation.domainCostMirrorsAdjusted > 0
+    ) {
+      console.log("[STARTUP] Billing reconciliation:", reconciliation);
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn("[STARTUP] Could not reconcile stored billing history:", msg);
+  }
+
+  try {
     const { initAuditLog, cleanupExpiredLogs } = await import("@/lib/compliance/index");
     initAuditLog();
     console.log("[COMPLIANCE] Audit log table initialized");

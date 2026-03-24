@@ -29,6 +29,12 @@ function toNumber(value: unknown): number {
   return 0;
 }
 
+function toNumberOrNull(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = toNumber(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function toStringOrNull(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
@@ -218,6 +224,8 @@ export async function saveCallLog(entry: any) {
       apiKeyId,
       apiKeyName: entry.apiKeyName || null,
       comboName: entry.comboName || null,
+      serviceTier: entry.serviceTier || null,
+      costUsd: Number.isFinite(Number(entry.costUsd)) ? Number(entry.costUsd) : null,
       requestBody: truncatePayload(protectedRequestBody),
       responseBody: truncatePayload(protectedResponseBody),
       error: typeof entry.error === "string" ? sanitizePII(entry.error).text : entry.error || null,
@@ -229,10 +237,10 @@ export async function saveCallLog(entry: any) {
       `
       INSERT INTO call_logs (id, timestamp, method, path, status, model, provider,
         account, connection_id, duration, tokens_in, tokens_out, request_type, source_format, target_format,
-        api_key_id, api_key_name, combo_name, request_body, response_body, error)
+        api_key_id, api_key_name, combo_name, service_tier, cost_usd, request_body, response_body, error)
       VALUES (@id, @timestamp, @method, @path, @status, @model, @provider,
         @account, @connectionId, @duration, @tokensIn, @tokensOut, @requestType, @sourceFormat, @targetFormat,
-        @apiKeyId, @apiKeyName, @comboName, @requestBody, @responseBody, @error)
+        @apiKeyId, @apiKeyName, @comboName, @serviceTier, @costUsd, @requestBody, @responseBody, @error)
     `
     ).run(logEntry);
 
@@ -406,6 +414,8 @@ export async function getCallLogs(filter: any = {}) {
       comboName: toStringOrNull(l.combo_name),
       apiKeyId: toStringOrNull(l.api_key_id),
       apiKeyName: toStringOrNull(l.api_key_name),
+      serviceTier: toStringOrNull(l.service_tier),
+      costUsd: toNumberOrNull(l.cost_usd),
       hasRequestBody: typeof l.request_body === "string" && l.request_body.length > 0,
       hasResponseBody: typeof l.response_body === "string" && l.response_body.length > 0,
     };
@@ -438,6 +448,8 @@ export async function getCallLogById(id: string) {
     apiKeyId: toStringOrNull(entryRow.api_key_id),
     apiKeyName: toStringOrNull(entryRow.api_key_name),
     comboName: toStringOrNull(entryRow.combo_name),
+    serviceTier: toStringOrNull(entryRow.service_tier),
+    costUsd: toNumberOrNull(entryRow.cost_usd),
     requestBody: parseJsonString(entryRow.request_body),
     responseBody: parseJsonString(entryRow.response_body),
     error: toStringOrNull(entryRow.error),

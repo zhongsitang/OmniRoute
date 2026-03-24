@@ -23,7 +23,8 @@ import {
   appendRequestLog,
   saveCallLog,
 } from "@/lib/usageDb";
-import { recordUsageCost } from "@/lib/usage/costTracking";
+import { calculateUsageCost } from "@/lib/usage/costTracking";
+import { extractServiceTierFromRequestBody } from "@/lib/usage/serviceTier";
 import { getModelNormalizeToolCallId, getModelPreserveOpenAIDeveloperRole } from "@/lib/localDb";
 import { getExecutor } from "../executors/index.ts";
 import { translateNonStreamingResponse } from "./responseTranslator.ts";
@@ -98,6 +99,8 @@ export async function handleChatCore({
 }) {
   const { provider, model, extendedContext } = modelInfo;
   const startTime = Date.now();
+  let finalBody;
+  let translatedBody = body;
   const getClientHeader = (headerName: string): string | null => {
     const headers = clientRawRequest?.headers;
     if (!headers) return null;
@@ -106,6 +109,8 @@ export async function handleChatCore({
     const entry = Object.entries(headers).find(([key]) => key.toLowerCase() === normalized);
     return typeof entry?.[1] === "string" ? entry[1] : null;
   };
+  const getRequestServiceTier = () =>
+    extractServiceTierFromRequestBody(finalBody ?? translatedBody ?? body);
   const persistFailureUsage = (statusCode: number, errorCode?: string | null) => {
     saveRequestUsage({
       provider: provider || "unknown",
@@ -120,6 +125,7 @@ export async function handleChatCore({
       connectionId: connectionId || undefined,
       apiKeyId: apiKeyInfo?.id || undefined,
       apiKeyName: apiKeyInfo?.name || undefined,
+      serviceTier: getRequestServiceTier(),
     }).catch(() => {});
   };
 
@@ -223,7 +229,6 @@ export async function handleChatCore({
   log?.debug?.("FORMAT", `${sourceFormat} → ${targetFormat} | stream=${stream}`);
 
   // Translate request (pass reqLogger for intermediate logging)
-  let translatedBody = body;
   const isClaudePassthrough = sourceFormat === FORMATS.CLAUDE && targetFormat === FORMATS.CLAUDE;
   try {
     if (nativeCodexPassthrough) {
@@ -492,7 +497,6 @@ export async function handleChatCore({
   let providerResponse;
   let providerUrl;
   let providerHeaders;
-  let finalBody;
 
   try {
     const result = await executeProviderRequest(effectiveModel, true);
@@ -531,6 +535,7 @@ export async function handleChatCore({
       duration: Date.now() - startTime,
       requestBody: body,
       error: error.message,
+      serviceTier: getRequestServiceTier(),
       sourceFormat,
       targetFormat,
       comboName,
@@ -615,8 +620,9 @@ export async function handleChatCore({
       provider,
       connectionId,
       duration: Date.now() - startTime,
-      requestBody: body,
+      requestBody: finalBody || body,
       error: message,
+      serviceTier: getRequestServiceTier(),
       sourceFormat,
       targetFormat,
       comboName,
@@ -792,6 +798,11 @@ export async function handleChatCore({
 
     // Log usage for non-streaming responses
     const usage = extractUsageFromResponse(responseBody, provider);
+    const serviceTier = getRequestServiceTier();
+    const costUsd =
+      usage && typeof usage === "object"
+        ? await calculateUsageCost(provider, model, usage, { serviceTier }).catch(() => 0)
+        : null;
     appendRequestLog({ model, provider, connectionId, tokens: usage, status: "200 OK" }).catch(
       () => {}
     );
@@ -806,8 +817,10 @@ export async function handleChatCore({
       connectionId,
       duration: Date.now() - startTime,
       tokens: usage,
-      requestBody: body,
+      requestBody: finalBody || body,
       responseBody,
+      serviceTier,
+      costUsd: Number.isFinite(Number(costUsd)) ? Number(costUsd) : null,
       sourceFormat,
       targetFormat,
       comboName,
@@ -832,10 +845,11 @@ export async function handleChatCore({
         connectionId: connectionId || undefined,
         apiKeyId: apiKeyInfo?.id || undefined,
         apiKeyName: apiKeyInfo?.name || undefined,
+        serviceTier,
+        costUsd: Number.isFinite(Number(costUsd)) ? Number(costUsd) : null,
       }).catch((err) => {
         console.error("Failed to save usage stats:", err.message);
       });
-      await recordUsageCost(apiKeyInfo, provider, model, usage).catch(() => {});
     }
 
     // Translate response to client's expected format (usually OpenAI)
@@ -911,24 +925,33 @@ export async function handleChatCore({
     usage: streamUsage,
     responseBody: streamResponseBody,
   }) => {
-    saveCallLog({
-      method: "POST",
-      path: clientRawRequest?.endpoint || "/v1/chat/completions",
-      status: streamStatus || 200,
-      model,
-      provider,
-      connectionId,
-      duration: Date.now() - startTime,
-      tokens: streamUsage || {},
-      requestBody: body,
-      responseBody: streamResponseBody ?? undefined,
-      sourceFormat,
-      targetFormat,
-      comboName,
-      apiKeyId: apiKeyInfo?.id || null,
-      apiKeyName: apiKeyInfo?.name || null,
-      noLog: apiKeyInfo?.noLog === true,
-    }).catch(() => {});
+    const serviceTier = getRequestServiceTier();
+    void (async () => {
+      const costUsd = await calculateUsageCost(provider, model, streamUsage, {
+        serviceTier,
+      }).catch(() => 0);
+
+      saveCallLog({
+        method: "POST",
+        path: clientRawRequest?.endpoint || "/v1/chat/completions",
+        status: streamStatus || 200,
+        model,
+        provider,
+        connectionId,
+        duration: Date.now() - startTime,
+        tokens: streamUsage || {},
+        requestBody: finalBody || body,
+        responseBody: streamResponseBody ?? undefined,
+        serviceTier,
+        costUsd: Number.isFinite(Number(costUsd)) ? Number(costUsd) : null,
+        sourceFormat,
+        targetFormat,
+        comboName,
+        apiKeyId: apiKeyInfo?.id || null,
+        apiKeyName: apiKeyInfo?.name || null,
+        noLog: apiKeyInfo?.noLog === true,
+      }).catch(() => {});
+    })();
   };
 
   // For Codex provider, translate response from openai-responses to openai (Chat Completions) format
@@ -956,7 +979,8 @@ export async function handleChatCore({
       body,
       onStreamComplete,
       apiKeyInfo,
-      streamIdleTimeoutMs
+      streamIdleTimeoutMs,
+      getRequestServiceTier()
     );
   } else if (needsTranslation(targetFormat, sourceFormat)) {
     // Standard translation for other providers
@@ -972,7 +996,8 @@ export async function handleChatCore({
       body,
       onStreamComplete,
       apiKeyInfo,
-      streamIdleTimeoutMs
+      streamIdleTimeoutMs,
+      getRequestServiceTier()
     );
   } else {
     log?.debug?.("STREAM", `Standard passthrough mode`);
@@ -984,7 +1009,8 @@ export async function handleChatCore({
       body,
       onStreamComplete,
       apiKeyInfo,
-      streamIdleTimeoutMs
+      streamIdleTimeoutMs,
+      getRequestServiceTier()
     );
   }
 

@@ -2,11 +2,11 @@ import { BaseExecutor } from "./base.ts";
 import { CODEX_DEFAULT_INSTRUCTIONS } from "../config/codexInstructions.ts";
 import { PROVIDERS } from "../config/constants.ts";
 import { refreshCodexToken } from "../services/tokenRefresh.ts";
+import { CODEX_FAST_SERVICE_TIER, normalizeServiceTier } from "@/lib/usage/serviceTier";
 
 // Ordered list of effort levels from lowest to highest
 const EFFORT_ORDER = ["none", "low", "medium", "high", "xhigh"] as const;
 type EffortLevel = (typeof EFFORT_ORDER)[number];
-const CODEX_FAST_WIRE_VALUE = "priority";
 let defaultFastServiceTierEnabled = false;
 
 function normalizeNativeResponsesInputItem(item: unknown): unknown {
@@ -63,11 +63,7 @@ function isCompactResponsesEndpoint(endpointPath: unknown): boolean {
 }
 
 function normalizeServiceTierValue(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const normalized = value.trim().toLowerCase();
-  if (!normalized) return undefined;
-  if (normalized === "fast") return CODEX_FAST_WIRE_VALUE;
-  return normalized;
+  return normalizeServiceTier(value) ?? undefined;
 }
 
 export function setDefaultFastServiceTierEnabled(enabled: boolean): void {
@@ -193,7 +189,7 @@ export class CodexExecutor extends BaseExecutor {
     if (requestServiceTier) {
       body.service_tier = requestServiceTier;
     } else if (defaultFastServiceTierEnabled) {
-      body.service_tier = CODEX_FAST_WIRE_VALUE;
+      body.service_tier = CODEX_FAST_SERVICE_TIER;
     }
 
     // Codex /responses passthrough still needs a system prompt because upstream

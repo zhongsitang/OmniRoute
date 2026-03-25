@@ -31,12 +31,12 @@ import {
 } from "@/shared/constants/providers";
 import { getModelsByProviderId } from "@/shared/constants/models";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
+import { useSystemTimeZone } from "@/shared/hooks/useSystemTimeZone";
 import { getProviderDisplayName } from "@/lib/display/names";
 import {
   MODEL_COMPAT_PROTOCOL_KEYS,
   type ModelCompatProtocolKey,
 } from "@/shared/constants/modelCompat";
-import { getCurrentTimeZone } from "@/shared/utils/timezone";
 
 type CompatByProtocolMap = Partial<
   Record<
@@ -3529,7 +3529,7 @@ function AddApiKeyModal({
   const tc = useTranslations("common");
   const isBailian = provider === "bailian-coding-plan";
   const defaultBailianUrl = "https://coding-intl.dashscope.aliyuncs.com/apps/anthropic/v1";
-  const currentTimeZone = getCurrentTimeZone();
+  const { resolvedTimeZone } = useSystemTimeZone();
 
   const [formData, setFormData] = useState({
     name: "",
@@ -3700,7 +3700,7 @@ function AddApiKeyModal({
             label={tc("scheduleTimezone")}
             value={formData.resetTimezone}
             onChange={(e) => setFormData({ ...formData, resetTimezone: e.target.value })}
-            placeholder={currentTimeZone}
+            placeholder={resolvedTimeZone}
             hint={tc("scheduleTimezoneHint")}
           />
         )}
@@ -3764,7 +3764,7 @@ function normalizeAndValidateHttpBaseUrl(rawValue, fallbackUrl) {
 function EditConnectionModal({ isOpen, connection, onSave, onClose }: EditConnectionModalProps) {
   const t = useTranslations("providers");
   const tc = useTranslations("common");
-  const currentTimeZone = getCurrentTimeZone();
+  const { resolvedTimeZone } = useSystemTimeZone();
   const [formData, setFormData] = useState({
     name: "",
     priority: 1,
@@ -4023,7 +4023,7 @@ function EditConnectionModal({ isOpen, connection, onSave, onClose }: EditConnec
             label={tc("scheduleTimezone")}
             value={formData.resetTimezone}
             onChange={(e) => setFormData({ ...formData, resetTimezone: e.target.value })}
-            placeholder={currentTimeZone}
+            placeholder={resolvedTimeZone}
             hint={tc("scheduleTimezoneHint")}
           />
         )}

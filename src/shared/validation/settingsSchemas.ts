@@ -6,12 +6,22 @@
  * at runtime (see: https://github.com/vercel/next.js/issues/12557).
  */
 import { z } from "zod";
+import { isValidTimeZone } from "@/shared/utils/timezone";
+
+const timeZoneSchema = z
+  .string()
+  .trim()
+  .max(100)
+  .refine((value) => value.length === 0 || isValidTimeZone(value), {
+    message: "timeZone must be a valid IANA timezone",
+  });
 
 export const updateSettingsSchema = z.object({
   newPassword: z.string().min(1).max(200).optional(),
   currentPassword: z.string().max(200).optional(),
   theme: z.string().max(50).optional(),
   language: z.string().max(10).optional(),
+  timeZone: timeZoneSchema.optional(),
   requireLogin: z.boolean().optional(),
   enableRequestLogs: z.boolean().optional(),
   enableSocks5Proxy: z.boolean().optional(),

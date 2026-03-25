@@ -4,6 +4,7 @@
 export interface Settings {
   requireLogin: boolean;
   hasPassword: boolean;
+  timeZone?: string;
   fallbackStrategy:
     | "fill-first"
     | "round-robin"

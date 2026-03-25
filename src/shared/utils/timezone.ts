@@ -16,6 +16,42 @@ export function getCurrentTimeZone(): string {
   }
 }
 
+export function normalizeTimeZone(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+export function resolvePreferredTimeZone(
+  preferredTimeZone: unknown,
+  fallbackTimeZone?: unknown
+): string {
+  const normalized = normalizeTimeZone(preferredTimeZone);
+  if (isValidTimeZone(normalized)) return normalized;
+
+  const fallback = normalizeTimeZone(fallbackTimeZone);
+  return isValidTimeZone(fallback) ? fallback : getCurrentTimeZone();
+}
+
+export function formatInTimeZone(
+  value: string | number | Date,
+  locale?: string,
+  preferredTimeZone?: unknown,
+  options: Intl.DateTimeFormatOptions = {}
+): string {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+
+  try {
+    const timeZone = resolvePreferredTimeZone(preferredTimeZone);
+    const formatterOptions: Intl.DateTimeFormatOptions =
+      "dateStyle" in options || "timeStyle" in options
+        ? { ...options, timeZone }
+        : { dateStyle: "medium", timeStyle: "short", ...options, timeZone };
+    return new Intl.DateTimeFormat(locale, formatterOptions).format(date);
+  } catch {
+    return date.toLocaleString(locale);
+  }
+}
+
 function getTimeZoneDateParts(
   timeZone: string,
   date: Date
@@ -99,9 +135,7 @@ function getUtcForTimeZoneLocalMidnight(
 }
 
 export function getNextDailyResetAt(preferredTimeZone: unknown, now = new Date()): string | null {
-  const timeZone = isValidTimeZone(preferredTimeZone)
-    ? preferredTimeZone.trim()
-    : getCurrentTimeZone();
+  const timeZone = resolvePreferredTimeZone(preferredTimeZone);
   const localParts = getTimeZoneDateParts(timeZone, now);
   if (!localParts) return null;
 

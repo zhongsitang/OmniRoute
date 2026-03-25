@@ -10,11 +10,13 @@ process.env.JWT_SECRET = "x".repeat(32);
 
 const core = await import("../../src/lib/db/core.ts");
 const providersDb = await import("../../src/lib/db/providers.ts");
+const settingsDb = await import("../../src/lib/db/settings.ts");
 const usageRoute = await import("../../src/app/api/usage/[connectionId]/route.ts");
 const usageService = await import("../../open-sse/services/usage.ts");
 const providerLimitUtils =
   await import("../../src/app/(dashboard)/dashboard/usage/components/ProviderLimits/utils.tsx");
 const quotaCache = await import("../../src/domain/quotaCache.ts");
+const timezoneUtils = await import("../../src/shared/utils/timezone.ts");
 
 async function settleBackupTasks() {
   await new Promise((resolve) => setTimeout(resolve, 50));
@@ -95,6 +97,125 @@ test("compatible provider daily usage normalizes into balance mode with inferred
     assert.equal(parsed.mode, "balance");
     assert.equal(parsed.balance.kind, "periodic");
     assert.equal(parsed.balance.limit, 90);
+  } finally {
+    restoreFetch(originalFetch);
+  }
+});
+
+test("compatible provider daily reset inference falls back to global system timezone", async () => {
+  const originalFetch = globalThis.fetch;
+
+  await settingsDb.updateSettings({ timeZone: "Asia/Shanghai" });
+
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        planName: "Compatible Daily",
+        remaining: 12,
+        unit: "USD",
+        subscription: {
+          daily_limit_usd: 20,
+          daily_usage_usd: 8,
+        },
+      }),
+      {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }
+    );
+
+  try {
+    const usage = await usageService.getUsageForProvider({
+      provider: "openai-compatible-chat-test-node",
+      apiKey: "sk_test",
+      providerSpecificData: {
+        baseUrl: "https://compatible.example/v1/",
+      },
+    });
+
+    assert.equal(usage.usageType, "compatible-balance");
+    assert.equal(usage.balance.resetAt, timezoneUtils.getNextDailyResetAt("Asia/Shanghai"));
+  } finally {
+    restoreFetch(originalFetch);
+  }
+});
+
+test("compatible provider resetTimezone overrides the global system timezone", async () => {
+  const originalFetch = globalThis.fetch;
+
+  await settingsDb.updateSettings({ timeZone: "Asia/Shanghai" });
+
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        planName: "Compatible Daily",
+        remaining: 6,
+        unit: "USD",
+        subscription: {
+          daily_limit_usd: 20,
+          daily_usage_usd: 14,
+        },
+      }),
+      {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }
+    );
+
+  try {
+    const usage = await usageService.getUsageForProvider({
+      provider: "openai-compatible-chat-test-node",
+      apiKey: "sk_test",
+      providerSpecificData: {
+        baseUrl: "https://compatible.example/v1/",
+        resetTimezone: "America/New_York",
+      },
+    });
+
+    assert.equal(usage.usageType, "compatible-balance");
+    assert.equal(usage.balance.resetAt, timezoneUtils.getNextDailyResetAt("America/New_York"));
+  } finally {
+    restoreFetch(originalFetch);
+  }
+});
+
+test("compatible provider daily reset inference falls back to host timezone when timezones are blank", async () => {
+  const originalFetch = globalThis.fetch;
+
+  await settingsDb.updateSettings({ timeZone: "" });
+
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        planName: "Compatible Daily",
+        remaining: 9,
+        unit: "USD",
+        subscription: {
+          daily_limit_usd: 20,
+          daily_usage_usd: 11,
+        },
+      }),
+      {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }
+    );
+
+  try {
+    const usage = await usageService.getUsageForProvider({
+      provider: "openai-compatible-chat-test-node",
+      apiKey: "sk_test",
+      providerSpecificData: {
+        baseUrl: "https://compatible.example/v1/",
+        resetTimezone: "   ",
+      },
+    });
+
+    assert.equal(usage.usageType, "compatible-balance");
+    assert.equal(
+      usage.balance.resetAt,
+      timezoneUtils.getNextDailyResetAt(timezoneUtils.getCurrentTimeZone())
+    );
   } finally {
     restoreFetch(originalFetch);
   }

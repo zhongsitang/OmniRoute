@@ -4,6 +4,7 @@ import { clearHealthCheckLogCache } from "@/lib/tokenHealthCheck";
 import bcrypt from "bcryptjs";
 import { timingSafeEqual } from "crypto";
 import { getRuntimePorts } from "@/lib/runtime/ports";
+import { buildSystemTimeZoneSnapshot } from "@/lib/systemTimeZone";
 import { updateSettingsSchema } from "@/shared/validation/settingsSchemas";
 import { isValidationFailure, validateBody } from "@/shared/validation/helpers";
 import { setCliCompatProviders } from "../../../../open-sse/config/cliFingerprints";
@@ -12,6 +13,7 @@ export async function GET() {
   try {
     const settings = await getSettings();
     const { password, ...safeSettings } = settings;
+    const systemTimeZone = buildSystemTimeZoneSnapshot(settings);
 
     // Sync CLI fingerprint providers to runtime cache on load
     if (settings.cliCompatProviders) {
@@ -23,6 +25,9 @@ export async function GET() {
 
     return NextResponse.json({
       ...safeSettings,
+      timeZone: systemTimeZone.timeZone,
+      hostTimeZone: systemTimeZone.hostTimeZone,
+      resolvedTimeZone: systemTimeZone.resolvedTimeZone,
       enableRequestLogs,
       hasPassword: !!password || !!process.env.INITIAL_PASSWORD,
       runtimePorts,
@@ -97,6 +102,7 @@ export async function PATCH(request) {
     }
 
     const settings = await updateSettings(body);
+    const systemTimeZone = buildSystemTimeZoneSnapshot(settings);
 
     // Clear health check log cache if that setting was updated
     if ("hideHealthCheckLogs" in body) {
@@ -109,7 +115,12 @@ export async function PATCH(request) {
     }
 
     const { password, ...safeSettings } = settings;
-    return NextResponse.json(safeSettings);
+    return NextResponse.json({
+      ...safeSettings,
+      timeZone: systemTimeZone.timeZone,
+      hostTimeZone: systemTimeZone.hostTimeZone,
+      resolvedTimeZone: systemTimeZone.resolvedTimeZone,
+    });
   } catch (error) {
     console.log("Error updating settings:", error);
     return NextResponse.json({ error: "Failed to update settings" }, { status: 500 });

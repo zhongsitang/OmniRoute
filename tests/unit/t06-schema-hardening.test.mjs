@@ -14,6 +14,7 @@ import {
   updateTaskRoutingSchema,
   taskRoutingActionSchema,
 } from "../../src/shared/validation/schemas.ts";
+import { updateSettingsSchema } from "../../src/shared/validation/settingsSchemas.ts";
 
 test("translatorDetectSchema rejects empty body object", () => {
   const validation = validateBody(translatorDetectSchema, { body: {} });
@@ -178,4 +179,31 @@ test("taskRoutingActionSchema accepts detect action with object body", () => {
     },
   });
   assert.equal(validation.success, true);
+});
+
+test("updateSettingsSchema accepts valid IANA timeZone values", () => {
+  const validation = validateBody(updateSettingsSchema, {
+    timeZone: "Asia/Shanghai",
+  });
+  assert.equal(validation.success, true);
+  if (validation.success) {
+    assert.equal(validation.data.timeZone, "Asia/Shanghai");
+  }
+});
+
+test("updateSettingsSchema rejects invalid timeZone values", () => {
+  const validation = validateBody(updateSettingsSchema, {
+    timeZone: "Mars/Olympus",
+  });
+  assert.equal(validation.success, false);
+});
+
+test("updateSettingsSchema allows blank timeZone to follow system", () => {
+  const validation = validateBody(updateSettingsSchema, {
+    timeZone: "   ",
+  });
+  assert.equal(validation.success, true);
+  if (validation.success) {
+    assert.equal(validation.data.timeZone, "");
+  }
 });

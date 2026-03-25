@@ -6,6 +6,7 @@ import { cn } from "@/shared/utils/cn";
 import { APP_CONFIG } from "@/shared/constants/config";
 import { useTranslations } from "next-intl";
 import SystemStorageTab from "./components/SystemStorageTab";
+import SystemTimeZoneCard from "./components/SystemTimeZoneCard";
 import SecurityTab from "./components/SecurityTab";
 import RoutingTab from "./components/RoutingTab";
 import ComboDefaultsTab from "./components/ComboDefaultsTab";
@@ -78,6 +79,7 @@ export default function SettingsPage() {
           {activeTab === "general" && (
             <>
               <div className="flex flex-col gap-6">
+                <SystemTimeZoneCard />
                 <SystemStorageTab />
                 <AppearanceTab />
               </div>

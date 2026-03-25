@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Button, Card, Input } from "@/shared/components";
+import { Button, Card, Select } from "@/shared/components";
 import { useSystemTimeZone } from "@/shared/hooks/useSystemTimeZone";
 import { isValidTimeZone, normalizeTimeZone } from "@/shared/utils/timezone";
 import { useTranslations } from "next-intl";
@@ -17,38 +17,76 @@ const COMMON_TIME_ZONES = [
   "Australia/Sydney",
 ];
 
+type TimeZoneOption = {
+  value: string;
+  label: string;
+};
+
+const getSupportedTimeZones = (): string[] => {
+  const intlWithSupportedValuesOf = Intl as typeof Intl & {
+    supportedValuesOf?: (key: "timeZone") => string[];
+  };
+
+  if (typeof intlWithSupportedValuesOf.supportedValuesOf === "function") {
+    return intlWithSupportedValuesOf.supportedValuesOf("timeZone");
+  }
+
+  return COMMON_TIME_ZONES;
+};
+const SUPPORTED_TIME_ZONES = getSupportedTimeZones();
+
+function buildTimeZoneOptions(currentTimeZone: string, hostTimeZone: string): TimeZoneOption[] {
+  const seen = new Set<string>();
+  const orderedTimeZones = [
+    currentTimeZone,
+    hostTimeZone,
+    ...COMMON_TIME_ZONES,
+    ...SUPPORTED_TIME_ZONES,
+  ]
+    .map((value) => normalizeTimeZone(value))
+    .filter((value) => {
+      if (!value || seen.has(value) || !isValidTimeZone(value)) return false;
+      seen.add(value);
+      return true;
+    });
+
+  return orderedTimeZones.map((value) => ({
+    value,
+    label: value,
+  }));
+}
+
 export default function SystemTimeZoneCard() {
   const t = useTranslations("settings");
   const tApi = useTranslations("apiManager");
   const tc = useTranslations("common");
   const { timeZone, hostTimeZone, loading, saveTimeZone } = useSystemTimeZone();
-  const [timeZoneInput, setTimeZoneInput] = useState("");
+  const [selectedTimeZone, setSelectedTimeZone] = useState("");
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState<"" | "saved" | "error">("");
   const title =
     typeof t.has === "function" && t.has("systemTimezone")
       ? t("systemTimezone")
-      : "Internal timezone";
+      : "System Timezone";
   const hint =
     typeof t.has === "function" && t.has("systemTimezoneHint")
       ? t("systemTimezoneHint")
-      : "Only affects internal calculations when a provider-specific timezone is not set. It does not change dashboard timestamp display.";
+      : "Does not change the timestamps shown in the dashboard.";
   const description =
-    hostTimeZone && typeof t.has === "function" && t.has("systemTimezoneDesc")
+    typeof t.has === "function" && t.has("systemTimezoneDesc")
       ? t("systemTimezoneDesc", { timeZone: hostTimeZone })
-      : hostTimeZone
-        ? `Use a fixed fallback timezone for internal date logic such as inferred reset windows. Leave blank to follow this host (${hostTimeZone}).`
-        : hint;
+      : "Used for daily resets, refresh windows, and similar internal schedule rules.";
   const followHostLabel =
     typeof t.has === "function" && t.has("followSystemTimezone")
       ? t("followSystemTimezone")
-      : "Follow host timezone";
+      : "Use server timezone";
   const invalidTimeZoneMessage =
     typeof t.has === "function" && t.has("invalidTimezone")
       ? t("invalidTimezone")
-      : "Enter a valid IANA timezone such as Asia/Shanghai.";
+      : "Enter a valid timezone, for example Asia/Shanghai.";
 
-  const normalizedTimeZoneInput = normalizeTimeZone(timeZoneInput);
+  const timeZoneOptions = buildTimeZoneOptions(timeZone, hostTimeZone);
+  const normalizedTimeZoneInput = normalizeTimeZone(selectedTimeZone);
   const timeZoneDirty = normalizedTimeZoneInput !== timeZone;
   const timeZoneError =
     normalizedTimeZoneInput.length > 0 && !isValidTimeZone(normalizedTimeZoneInput)
@@ -56,19 +94,19 @@ export default function SystemTimeZoneCard() {
       : "";
 
   useEffect(() => {
-    setTimeZoneInput(timeZone);
+    setSelectedTimeZone(timeZone);
   }, [timeZone]);
 
   const handleSaveTimeZone = async () => {
     if (timeZoneError) return;
 
-    const nextTimeZone = normalizeTimeZone(timeZoneInput);
+    const nextTimeZone = normalizedTimeZoneInput;
     setSaving(true);
     setStatus("");
 
     try {
       const nextState = await saveTimeZone(nextTimeZone);
-      setTimeZoneInput(nextState.timeZone);
+      setSelectedTimeZone(nextState.timeZone);
       setStatus("saved");
       setTimeout(() => setStatus(""), 2000);
     } catch (err) {
@@ -94,32 +132,26 @@ export default function SystemTimeZoneCard() {
       </div>
 
       <div className="flex flex-col gap-4">
-        <Input
+        <Select
           label={tApi("scheduleTimezone")}
-          value={timeZoneInput}
-          onChange={(e) => {
-            setTimeZoneInput(e.target.value);
+          value={selectedTimeZone}
+          onChange={(e: React.ChangeEvent<HTMLSelectElement>) => {
+            setSelectedTimeZone(e.target.value);
             setStatus("");
           }}
-          placeholder={hostTimeZone || undefined}
+          options={timeZoneOptions}
+          placeholder={hostTimeZone ? `${followHostLabel} (${hostTimeZone})` : followHostLabel}
           hint={hint}
           error={timeZoneError || undefined}
-          list="system-timezone-suggestions"
           disabled={loading || saving}
         />
-
-        <datalist id="system-timezone-suggestions">
-          {COMMON_TIME_ZONES.map((timeZone) => (
-            <option key={timeZone} value={timeZone} />
-          ))}
-        </datalist>
 
         <div className="flex flex-wrap items-center gap-3">
           <Button
             variant="secondary"
             size="sm"
             onClick={() => {
-              setTimeZoneInput("");
+              setSelectedTimeZone("");
               setStatus("");
             }}
             disabled={loading || saving}

@@ -70,6 +70,82 @@ export const formatProviderCredentials = (provider: string, credentials: any) =>
 
 export const getAllAccessTokens = (userInfo: any) => _getAllAccessTokens(userInfo, log);
 
+function normalizeProjectId(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function asRecord(value: unknown): Record<string, any> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, any>)
+    : {};
+}
+
+function extractProjectIdFromCredentials(credentials: any): string | null {
+  if (!credentials || typeof credentials !== "object") return null;
+
+  const directProjectId = normalizeProjectId(credentials.projectId);
+  if (directProjectId) return directProjectId;
+
+  const providerSpecificData = asRecord(credentials.providerSpecificData);
+  return normalizeProjectId(providerSpecificData.projectId);
+}
+
+export function buildGeminiCliProjectPersistenceUpdates(
+  previousCredentials: any,
+  refreshedCredentials: any
+) {
+  const projectId =
+    extractProjectIdFromCredentials(refreshedCredentials) ||
+    extractProjectIdFromCredentials(previousCredentials);
+  if (!projectId) return {};
+
+  const previousProviderData = asRecord(previousCredentials?.providerSpecificData);
+  const refreshedProviderData = asRecord(refreshedCredentials?.providerSpecificData);
+  const mergedProviderData = { ...previousProviderData, ...refreshedProviderData };
+
+  return {
+    projectId,
+    providerSpecificData: {
+      ...mergedProviderData,
+      projectId,
+    },
+  };
+}
+
+async function discoverGeminiCliProjectId(accessToken: string): Promise<string | null> {
+  if (!accessToken) return null;
+
+  try {
+    const response = await fetch("https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        metadata: {
+          ideType: "IDE_UNSPECIFIED",
+          platform: "PLATFORM_UNSPECIFIED",
+          pluginType: "GEMINI",
+        },
+      }),
+    });
+
+    if (!response.ok) return null;
+
+    const data = await response.json();
+    const project = asRecord(data).cloudaicompanionProject;
+
+    if (typeof project === "string") {
+      return normalizeProjectId(project);
+    }
+
+    return normalizeProjectId(asRecord(project).id);
+  } catch {
+    return null;
+  }
+}
+
 // Local-specific: Update credentials in localDb
 export async function updateProviderCredentials(connectionId: string, newCredentials: any) {
   try {
@@ -87,6 +163,9 @@ export async function updateProviderCredentials(connectionId: string, newCredent
     }
     if (newCredentials.providerSpecificData) {
       updates.providerSpecificData = newCredentials.providerSpecificData;
+    }
+    if (newCredentials.projectId) {
+      updates.projectId = newCredentials.projectId;
     }
 
     const result = await updateProviderConnection(connectionId, updates);
@@ -121,7 +200,15 @@ export async function checkAndRefreshToken(provider: string, credentials: any) {
 
       const newCredentials = await getAccessToken(provider, updatedCredentials);
       if (newCredentials && newCredentials.accessToken) {
-        await updateProviderCredentials(updatedCredentials.connectionId, newCredentials);
+        const persistencePayload =
+          provider === "gemini-cli"
+            ? {
+                ...newCredentials,
+                ...buildGeminiCliProjectPersistenceUpdates(updatedCredentials, newCredentials),
+              }
+            : newCredentials;
+
+        await updateProviderCredentials(updatedCredentials.connectionId, persistencePayload);
 
         updatedCredentials = {
           ...updatedCredentials,
@@ -130,6 +217,44 @@ export async function checkAndRefreshToken(provider: string, credentials: any) {
           expiresAt: newCredentials.expiresIn
             ? new Date(Date.now() + newCredentials.expiresIn * 1000).toISOString()
             : updatedCredentials.expiresAt,
+        };
+
+        if (provider === "gemini-cli") {
+          const persistedProjectId = normalizeProjectId(persistencePayload.projectId);
+          if (persistedProjectId) {
+            updatedCredentials.projectId = persistedProjectId;
+          }
+
+          if (persistencePayload.providerSpecificData) {
+            updatedCredentials.providerSpecificData = persistencePayload.providerSpecificData;
+          }
+        }
+      }
+    }
+  }
+
+  if (
+    provider === "gemini-cli" &&
+    updatedCredentials.accessToken &&
+    !extractProjectIdFromCredentials(updatedCredentials)
+  ) {
+    const discoveredProjectId = await runWithRefreshProxy(updatedCredentials, () =>
+      discoverGeminiCliProjectId(updatedCredentials.accessToken)
+    );
+
+    if (discoveredProjectId) {
+      const persistencePayload = buildGeminiCliProjectPersistenceUpdates(updatedCredentials, {
+        projectId: discoveredProjectId,
+        providerSpecificData: { projectId: discoveredProjectId },
+      });
+
+      if (Object.keys(persistencePayload).length > 0) {
+        await updateProviderCredentials(updatedCredentials.connectionId, persistencePayload);
+        updatedCredentials = {
+          ...updatedCredentials,
+          ...persistencePayload,
+          providerSpecificData:
+            persistencePayload.providerSpecificData || updatedCredentials.providerSpecificData,
         };
       }
     }

@@ -266,6 +266,31 @@ export function classifyError(status, errorText) {
   return RateLimitReason.UNKNOWN;
 }
 
+function isGeminiCliProjectContextError(errorText) {
+  if (!errorText) return false;
+  const lower = String(errorText).toLowerCase();
+
+  if (
+    lower.includes("cloudaicompanionproject") ||
+    lower.includes("loadcodeassist") ||
+    lower.includes("retrieveuserquota")
+  ) {
+    return true;
+  }
+
+  if (!lower.includes("project")) return false;
+
+  return (
+    lower.includes("invalid") ||
+    lower.includes("missing") ||
+    lower.includes("required") ||
+    lower.includes("not found") ||
+    lower.includes("permission denied") ||
+    lower.includes("forbidden") ||
+    lower.includes("failed precondition")
+  );
+}
+
 // ─── Configurable Backoff ───────────────────────────────────────────────────
 
 /**
@@ -326,6 +351,18 @@ export function checkFallbackError(
         shouldFallback: true,
         cooldownMs: COOLDOWN_MS.requestNotAllowed,
         reason: RateLimitReason.RATE_LIMIT_EXCEEDED,
+      };
+    }
+
+    if (
+      status === HTTP_STATUS.BAD_REQUEST &&
+      provider === "gemini-cli" &&
+      isGeminiCliProjectContextError(lowerError)
+    ) {
+      return {
+        shouldFallback: true,
+        cooldownMs: COOLDOWN_MS.notFound,
+        reason: RateLimitReason.AUTH_ERROR,
       };
     }
 

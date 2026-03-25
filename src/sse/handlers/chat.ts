@@ -56,6 +56,33 @@ import {
   lockModel,
 } from "@omniroute/open-sse/services/accountFallback.ts";
 
+function normalizeProjectId(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+export function resolveNativeGeminiCliModelOverride(
+  modelStr: string,
+  body: any,
+  sourceFormat: string
+) {
+  if (sourceFormat !== "gemini-cli") return null;
+  if (typeof modelStr !== "string" || modelStr.trim().length === 0 || modelStr.includes("/")) {
+    return null;
+  }
+  if (body?.userAgent !== "gemini-cli" || !Array.isArray(body?.request?.contents)) {
+    return null;
+  }
+
+  const parsed = parseModel(modelStr);
+  if (!parsed.model || !/^(gemini|gemma)-/i.test(parsed.model)) return null;
+
+  return {
+    provider: "gemini-cli",
+    model: parsed.model,
+    extendedContext: parsed.extendedContext,
+  };
+}
+
 function getRuntimeStreamIdleTimeoutMs(settings: any) {
   const raw = settings?.streamIdleTimeoutMs;
   if (raw === null || raw === undefined || raw === "") return undefined;
@@ -526,7 +553,9 @@ async function handleSingleModelChat(
  * Resolve model string to provider/model info, or return an error response.
  */
 async function resolveModelOrError(modelStr: string, body: any) {
-  const modelInfo = await getModelInfo(modelStr);
+  const sourceFormat = detectFormat(body);
+  const modelOverride = resolveNativeGeminiCliModelOverride(modelStr, body, sourceFormat);
+  const modelInfo = modelOverride || (await getModelInfo(modelStr));
   if (!modelInfo.provider) {
     if ((modelInfo as any).errorType === "ambiguous_model") {
       const message =
@@ -544,7 +573,6 @@ async function resolveModelOrError(modelStr: string, body: any) {
   }
 
   const { provider, model, extendedContext } = modelInfo;
-  const sourceFormat = detectFormat(body);
   const providerAlias = PROVIDER_ID_TO_ALIAS[provider] || provider;
 
   // If the custom model specifies apiFormat="responses", override targetFormat
@@ -635,10 +663,12 @@ async function executeChatWithBreaker({
           comboName,
           streamIdleTimeoutMs,
           onCredentialsRefreshed: async (newCreds: any) => {
+            const persistedProjectId = normalizeProjectId(newCreds.projectId);
             await updateProviderCredentials(credentials.connectionId, {
               accessToken: newCreds.accessToken,
               refreshToken: newCreds.refreshToken,
               providerSpecificData: newCreds.providerSpecificData,
+              ...(persistedProjectId ? { projectId: persistedProjectId } : {}),
               testStatus: "active",
             });
           },

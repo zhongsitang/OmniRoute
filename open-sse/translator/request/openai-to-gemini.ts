@@ -68,6 +68,39 @@ type CloudCodeEnvelope = {
   };
 };
 
+function normalizeProjectId(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function resolveCloudCodeProjectId(credentials: unknown): string | null {
+  if (!credentials || typeof credentials !== "object") return null;
+
+  const record = credentials as Record<string, unknown>;
+  const directProjectId = normalizeProjectId(record.projectId);
+  if (directProjectId) return directProjectId;
+
+  const providerSpecificData =
+    record.providerSpecificData &&
+    typeof record.providerSpecificData === "object" &&
+    !Array.isArray(record.providerSpecificData)
+      ? (record.providerSpecificData as Record<string, unknown>)
+      : {};
+
+  const providerProjectId = normalizeProjectId(providerSpecificData.projectId);
+  if (providerProjectId) return providerProjectId;
+
+  const cloudCodeProject = providerSpecificData.cloudaicompanionProject;
+  if (typeof cloudCodeProject === "string") {
+    return normalizeProjectId(cloudCodeProject);
+  }
+
+  if (cloudCodeProject && typeof cloudCodeProject === "object") {
+    return normalizeProjectId((cloudCodeProject as Record<string, unknown>).id);
+  }
+
+  return null;
+}
+
 // Core: Convert OpenAI request to Gemini format (base for all variants)
 function openaiToGeminiBase(model, body, stream) {
   const result: GeminiRequest = {
@@ -320,7 +353,7 @@ export function openaiToGeminiCLIRequest(model, body, stream) {
 
 // Wrap Gemini CLI format in Cloud Code wrapper
 function wrapInCloudCodeEnvelope(model, geminiCLI, credentials = null, isAntigravity = false) {
-  let projectId = credentials?.projectId;
+  let projectId = resolveCloudCodeProjectId(credentials);
 
   if (!projectId) {
     // Graceful fallback: warn instead of hard-throw so the request reaches
@@ -376,7 +409,7 @@ function wrapInCloudCodeEnvelope(model, geminiCLI, credentials = null, isAntigra
 }
 
 function wrapInCloudCodeEnvelopeForClaude(model, claudeRequest, credentials = null) {
-  let projectId = credentials?.projectId;
+  let projectId = resolveCloudCodeProjectId(credentials);
 
   if (!projectId) {
     console.warn(

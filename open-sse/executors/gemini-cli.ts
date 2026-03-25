@@ -1,6 +1,71 @@
 import { BaseExecutor } from "./base.ts";
 import { PROVIDERS, OAUTH_ENDPOINTS } from "../config/constants.ts";
 
+function normalizeProjectId(value) {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+export function resolveGeminiCliProjectId(credentials) {
+  if (!credentials || typeof credentials !== "object") return null;
+
+  const directProjectId = normalizeProjectId(credentials.projectId);
+  if (directProjectId) return directProjectId;
+
+  const providerSpecificData =
+    credentials.providerSpecificData &&
+    typeof credentials.providerSpecificData === "object" &&
+    !Array.isArray(credentials.providerSpecificData)
+      ? credentials.providerSpecificData
+      : {};
+
+  const providerProjectId = normalizeProjectId(providerSpecificData.projectId);
+  if (providerProjectId) return providerProjectId;
+
+  const cloudCodeProject = providerSpecificData.cloudaicompanionProject;
+  if (typeof cloudCodeProject === "string") {
+    return normalizeProjectId(cloudCodeProject);
+  }
+
+  if (cloudCodeProject && typeof cloudCodeProject === "object") {
+    return normalizeProjectId(cloudCodeProject.id);
+  }
+
+  return null;
+}
+
+async function fetchGeminiCliProjectId(accessToken, log) {
+  if (!accessToken) return null;
+
+  try {
+    const response = await fetch("https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        metadata: {
+          ideType: "IDE_UNSPECIFIED",
+          platform: "PLATFORM_UNSPECIFIED",
+          pluginType: "GEMINI",
+        },
+      }),
+    });
+
+    if (!response.ok) return null;
+
+    const data = await response.json();
+    const project = data?.cloudaicompanionProject;
+    if (typeof project === "string") {
+      return normalizeProjectId(project);
+    }
+    return normalizeProjectId(project?.id);
+  } catch (error) {
+    log?.warn?.("TOKEN", `Gemini CLI project discovery after refresh failed: ${error.message}`);
+    return null;
+  }
+}
+
 export class GeminiCLIExecutor extends BaseExecutor {
   private _currentModel: string = "";
 
@@ -37,8 +102,9 @@ export class GeminiCLIExecutor extends BaseExecutor {
       return body;
     }
 
-    if (credentials?.projectId) {
-      body.project = credentials.projectId;
+    const resolvedProjectId = resolveGeminiCliProjectId(credentials);
+    if (resolvedProjectId) {
+      body.project = resolvedProjectId;
     }
     return body;
   }
@@ -64,13 +130,22 @@ export class GeminiCLIExecutor extends BaseExecutor {
       if (!response.ok) return null;
 
       const tokens = await response.json();
+      const projectId =
+        (await fetchGeminiCliProjectId(tokens.access_token, log)) ||
+        resolveGeminiCliProjectId(credentials);
       log?.info?.("TOKEN", "Gemini CLI refreshed");
 
       return {
         accessToken: tokens.access_token,
         refreshToken: tokens.refresh_token || credentials.refreshToken,
         expiresIn: tokens.expires_in,
-        projectId: credentials.projectId,
+        projectId,
+        providerSpecificData: projectId
+          ? {
+              ...(credentials?.providerSpecificData || {}),
+              projectId,
+            }
+          : credentials?.providerSpecificData,
       };
     } catch (error) {
       log?.error?.("TOKEN", `Gemini CLI refresh error: ${error.message}`);

@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server";
 import { getProviderConnectionById } from "@/models";
-import { resolveProxyForProviderOperation } from "@/lib/localDb";
+import { resolveProxyForProviderOperation, updateProviderConnection } from "@/lib/localDb";
+import {
+  buildGeminiCliProjectPersistenceUpdates,
+  checkAndRefreshToken,
+  getAccessToken,
+  updateProviderCredentials,
+} from "@/sse/services/tokenRefresh";
 import { getRegistryEntry } from "@omniroute/open-sse/config/providerRegistry.ts";
 import {
   isOpenAICompatibleProvider,
@@ -68,7 +74,10 @@ function getModelNameFromRegistry(provider: string, modelId: string): string {
   return match?.name || modelId;
 }
 
-function extractGeminiCliProjectId(connection: unknown, loadCodeAssistData?: unknown): string | null {
+function extractGeminiCliProjectId(
+  connection: unknown,
+  loadCodeAssistData?: unknown
+): string | null {
   const connectionRecord = asRecord(connection);
   const providerSpecificData = asRecord(connectionRecord.providerSpecificData);
   const connectionProjectId = connectionRecord.projectId;
@@ -90,6 +99,35 @@ function extractGeminiCliProjectId(connection: unknown, loadCodeAssistData?: unk
   const projectRecord = asRecord(project);
   const projectId = projectRecord.id;
   return typeof projectId === "string" && projectId.trim().length > 0 ? projectId.trim() : null;
+}
+
+export function buildGeminiCliProjectPersistenceUpdate(
+  connection: unknown,
+  projectId: string | null
+): { projectId: string; providerSpecificData: JsonRecord } | null {
+  if (typeof projectId !== "string" || projectId.trim().length === 0) return null;
+  const normalizedProjectId = projectId.trim();
+
+  const connectionRecord = asRecord(connection);
+  const currentProjectId =
+    typeof connectionRecord.projectId === "string" ? connectionRecord.projectId.trim() : null;
+  const providerSpecificData = asRecord(connectionRecord.providerSpecificData);
+  const providerProjectId =
+    typeof providerSpecificData.projectId === "string"
+      ? providerSpecificData.projectId.trim()
+      : null;
+
+  if (currentProjectId === normalizedProjectId && providerProjectId === normalizedProjectId) {
+    return null;
+  }
+
+  return {
+    projectId: normalizedProjectId,
+    providerSpecificData: {
+      ...providerSpecificData,
+      projectId: normalizedProjectId,
+    },
+  };
 }
 
 export function getGeminiCliModelsFromQuotaResponse(
@@ -117,7 +155,8 @@ export function getGeminiCliModelsFromQuotaResponse(
 async function fetchGeminiCliDynamicModels(
   connection: unknown,
   accessToken: string,
-  withProviderProxy: <T>(fn: () => Promise<T>) => Promise<T>
+  withProviderProxy: <T>(fn: () => Promise<T>) => Promise<T>,
+  persistProjectId?: (projectId: string) => Promise<void>
 ): Promise<Array<ProviderModelListItem>> {
   if (!accessToken) return [];
 
@@ -151,6 +190,10 @@ async function fetchGeminiCliDynamicModels(
       console.log("Gemini CLI loadCodeAssist returned no project; falling back to static models");
       return [];
     }
+  }
+
+  if (projectId && typeof persistProjectId === "function") {
+    await persistProjectId(projectId);
   }
 
   const quotaResponse = await withProviderProxy(() =>
@@ -440,7 +483,7 @@ const PROVIDER_MODELS_CONFIG: Record<string, ProviderModelsConfigEntry> = {
 export async function GET(request, { params }) {
   try {
     const { id } = await params;
-    const connection = await getProviderConnectionById(id);
+    let connection = await getProviderConnectionById(id);
 
     if (!connection) {
       return NextResponse.json({ error: "Connection not found" }, { status: 404 });
@@ -456,7 +499,46 @@ export async function GET(request, { params }) {
 
     const connectionId = typeof connection.id === "string" ? connection.id : id;
     const apiKey = typeof connection.apiKey === "string" ? connection.apiKey : "";
-    const accessToken = typeof connection.accessToken === "string" ? connection.accessToken : "";
+    let accessToken = typeof connection.accessToken === "string" ? connection.accessToken : "";
+    if (provider === "gemini-cli") {
+      const refreshedConnection = await checkAndRefreshToken(provider, {
+        ...connection,
+        connectionId,
+      });
+      if (refreshedConnection?.accessToken) {
+        accessToken = refreshedConnection.accessToken;
+        connection = {
+          ...connection,
+          ...refreshedConnection,
+        };
+      }
+
+      if (!extractGeminiCliProjectId(connection)) {
+        const forcedRefresh = await getAccessToken(provider, {
+          ...connection,
+          connectionId,
+        });
+
+        if (forcedRefresh?.accessToken) {
+          const persistencePayload = {
+            ...forcedRefresh,
+            ...buildGeminiCliProjectPersistenceUpdates(connection, forcedRefresh),
+          };
+
+          await updateProviderCredentials(connectionId, persistencePayload);
+          accessToken = forcedRefresh.accessToken;
+          connection = {
+            ...connection,
+            ...persistencePayload,
+            accessToken: forcedRefresh.accessToken,
+            refreshToken: forcedRefresh.refreshToken || connection.refreshToken,
+            expiresAt: forcedRefresh.expiresIn
+              ? new Date(Date.now() + forcedRefresh.expiresIn * 1000).toISOString()
+              : connection.expiresAt,
+          };
+        }
+      }
+    }
     const proxyInfo = await resolveProxyForProviderOperation({
       provider,
       connectionId,
@@ -558,10 +640,29 @@ export async function GET(request, { params }) {
     }
 
     if (provider === "gemini-cli") {
+      const persistProjectId = async (projectId: string) => {
+        const update = buildGeminiCliProjectPersistenceUpdate(connection, projectId);
+        if (!update) return;
+
+        try {
+          await updateProviderConnection(connectionId, update);
+          connection = {
+            ...connection,
+            ...update,
+          };
+        } catch (error) {
+          console.warn("Failed to persist Gemini CLI projectId from dynamic models", {
+            connectionId,
+            error: (error as Error).message,
+          });
+        }
+      };
+
       const geminiCliModels = await fetchGeminiCliDynamicModels(
         connection,
         accessToken,
-        withProviderProxy
+        withProviderProxy,
+        persistProjectId
       );
       if (geminiCliModels.length > 0) {
         return NextResponse.json({

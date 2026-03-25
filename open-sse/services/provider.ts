@@ -50,6 +50,11 @@ export function detectFormat(body) {
     return "openai-responses";
   }
 
+  // Gemini CLI native format: Cloud Code envelope wrapped in body.request
+  if (body.request?.contents && body.userAgent === "gemini-cli") {
+    return "gemini-cli";
+  }
+
   // Antigravity format: Gemini wrapped in body.request
   if (body.request?.contents && body.userAgent === "antigravity") {
     return "antigravity";

@@ -16,7 +16,7 @@ import {
 import { getConsistentMachineId } from "@/shared/utils/machineId";
 import { syncToCloud } from "@/lib/cloudSync";
 import { startLocalServer } from "@/lib/oauth/utils/server";
-import { getProxyConfig } from "@/lib/localDb";
+import { resolveProxyForProviderOperation } from "@/lib/localDb";
 import { runWithProxyContext } from "@omniroute/open-sse/utils/proxyFetch.ts";
 import {
   jsonObjectSchema,
@@ -31,8 +31,8 @@ if (!globalThis.__codexCallbackState) {
 }
 
 async function resolveOAuthProxy(provider: string) {
-  const proxyConfig = await getProxyConfig();
-  return proxyConfig.providers?.[provider] || proxyConfig.global || null;
+  const proxyInfo = await resolveProxyForProviderOperation({ provider });
+  return proxyInfo?.proxy || null;
 }
 
 /**

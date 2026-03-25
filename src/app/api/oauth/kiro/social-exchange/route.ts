@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { KiroService } from "@/lib/oauth/services/kiro";
 import { createProviderConnection, isCloudEnabled } from "@/models";
-import { getProxyConfig } from "@/lib/localDb";
+import { resolveProxyForProviderOperation } from "@/lib/localDb";
 import { getConsistentMachineId } from "@/shared/utils/machineId";
 import { syncToCloud } from "@/lib/cloudSync";
 import { runWithProxyContext } from "@omniroute/open-sse/utils/proxyFetch.ts";
@@ -37,11 +37,10 @@ export async function POST(request: Request) {
     const { code, codeVerifier, provider } = validation.data;
 
     const kiroService = new KiroService();
-    const proxyConfig = await getProxyConfig();
-    const proxy = proxyConfig.providers?.kiro || proxyConfig.global || null;
+    const proxyInfo = await resolveProxyForProviderOperation({ provider: "kiro" });
 
     // Exchange code for tokens (redirect_uri handled internally)
-    const tokenData = await runWithProxyContext(proxy, () =>
+    const tokenData = await runWithProxyContext(proxyInfo?.proxy || null, () =>
       kiroService.exchangeSocialCode(code, codeVerifier)
     );
 

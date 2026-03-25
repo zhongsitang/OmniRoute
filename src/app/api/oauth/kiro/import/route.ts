@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
 import { KiroService } from "@/lib/oauth/services/kiro";
 import { createProviderConnection, isCloudEnabled } from "@/models";
+import { resolveProxyForProviderOperation } from "@/lib/localDb";
 import { getConsistentMachineId } from "@/shared/utils/machineId";
 import { syncToCloud } from "@/lib/cloudSync";
+import { runWithProxyContext } from "@omniroute/open-sse/utils/proxyFetch.ts";
 import { kiroImportSchema } from "@/shared/validation/schemas";
 import { isValidationFailure, validateBody } from "@/shared/validation/helpers";
 
@@ -34,9 +36,12 @@ export async function POST(request: any) {
     const { refreshToken } = validation.data;
 
     const kiroService = new KiroService();
+    const proxyInfo = await resolveProxyForProviderOperation({ provider: "kiro" });
 
     // Validate and refresh token
-    const tokenData = await kiroService.validateImportToken(refreshToken.trim());
+    const tokenData = await runWithProxyContext(proxyInfo?.proxy || null, () =>
+      kiroService.validateImportToken(refreshToken.trim())
+    );
 
     // Extract email from JWT if available
     const email = kiroService.extractEmailFromJWT(tokenData.accessToken);

@@ -1,10 +1,12 @@
 import { NextResponse } from "next/server";
 import { getProviderNodeById } from "@/models";
+import { resolveProxyForProviderOperation } from "@/lib/localDb";
 import {
   isOpenAICompatibleProvider,
   isAnthropicCompatibleProvider,
 } from "@/shared/constants/providers";
 import { validateProviderApiKey } from "@/lib/providers/validation";
+import { runWithProxyContext } from "@omniroute/open-sse/utils/proxyFetch.ts";
 import { validateProviderApiKeySchema } from "@/shared/validation/schemas";
 import { isValidationFailure, validateBody } from "@/shared/validation/helpers";
 
@@ -49,11 +51,14 @@ export async function POST(request) {
       };
     }
 
-    const result = await validateProviderApiKey({
-      provider,
-      apiKey,
-      providerSpecificData,
-    });
+    const proxyInfo = await resolveProxyForProviderOperation({ provider });
+    const result = await runWithProxyContext(proxyInfo?.proxy || null, () =>
+      validateProviderApiKey({
+        provider,
+        apiKey,
+        providerSpecificData,
+      })
+    );
 
     if (result.unsupported) {
       return NextResponse.json({ error: "Provider validation not supported" }, { status: 400 });

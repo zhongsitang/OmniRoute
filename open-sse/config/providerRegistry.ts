@@ -30,8 +30,10 @@ const REASONING_UNSUPPORTED: readonly string[] = Object.freeze([
 
 export interface RegistryOAuth {
   clientIdEnv?: string;
+  clientIdEnvFallbacks?: string[];
   clientIdDefault?: string;
   clientSecretEnv?: string;
+  clientSecretEnvFallbacks?: string[];
   clientSecretDefault?: string;
   tokenUrl?: string;
   refreshUrl?: string;
@@ -94,6 +96,21 @@ const KIMI_CODING_SHARED = {
   ] as RegistryModel[],
 } as const;
 
+function resolveOAuthEnvValue(primaryEnv?: string, fallbackEnvs?: string[], defaultValue?: string) {
+  const envKeys = [primaryEnv, ...(fallbackEnvs || [])].filter(
+    (value): value is string => typeof value === "string" && value.length > 0
+  );
+
+  for (const key of envKeys) {
+    const value = process.env[key];
+    if (typeof value === "string" && value.length > 0) {
+      return value;
+    }
+  }
+
+  return defaultValue;
+}
+
 // ── Registry ──────────────────────────────────────────────────────────────
 
 export const REGISTRY: Record<string, RegistryEntry> = {
@@ -152,9 +169,10 @@ export const REGISTRY: Record<string, RegistryEntry> = {
     authHeader: "x-goog-api-key",
     oauth: {
       clientIdEnv: "GEMINI_OAUTH_CLIENT_ID",
+      clientIdEnvFallbacks: ["GEMINI_CLI_OAUTH_CLIENT_ID"],
       clientIdDefault: "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com",
       clientSecretEnv: "GEMINI_OAUTH_CLIENT_SECRET",
-      clientSecretDefault: "",
+      clientSecretEnvFallbacks: ["GEMINI_CLI_OAUTH_CLIENT_SECRET"],
     },
     models: [
       { id: "gemini-3.1-pro", name: "Gemini 3.1 Pro" },
@@ -184,9 +202,11 @@ export const REGISTRY: Record<string, RegistryEntry> = {
     authHeader: "bearer",
     oauth: {
       clientIdEnv: "GEMINI_CLI_OAUTH_CLIENT_ID",
+      clientIdEnvFallbacks: ["GEMINI_OAUTH_CLIENT_ID"],
       clientIdDefault: "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com",
       clientSecretEnv: "GEMINI_CLI_OAUTH_CLIENT_SECRET",
-      clientSecretDefault: "",
+      clientSecretEnvFallbacks: ["GEMINI_OAUTH_CLIENT_SECRET"],
+      clientSecretDefault: "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",
     },
     models: [
       { id: "gemini-3.1-pro", name: "Gemini 3.1 Pro" },
@@ -1290,11 +1310,18 @@ export function generateLegacyProviders(): Record<string, LegacyProvider> {
     // OAuth
     if (entry.oauth) {
       if (entry.oauth.clientIdEnv) {
-        p.clientId = process.env[entry.oauth.clientIdEnv] || entry.oauth.clientIdDefault;
+        p.clientId = resolveOAuthEnvValue(
+          entry.oauth.clientIdEnv,
+          entry.oauth.clientIdEnvFallbacks,
+          entry.oauth.clientIdDefault
+        );
       }
       if (entry.oauth.clientSecretEnv) {
-        p.clientSecret =
-          process.env[entry.oauth.clientSecretEnv] || entry.oauth.clientSecretDefault;
+        p.clientSecret = resolveOAuthEnvValue(
+          entry.oauth.clientSecretEnv,
+          entry.oauth.clientSecretEnvFallbacks,
+          entry.oauth.clientSecretDefault
+        );
       }
       if (entry.oauth.tokenUrl) p.tokenUrl = entry.oauth.tokenUrl;
       if (entry.oauth.refreshUrl) p.refreshUrl = entry.oauth.refreshUrl;

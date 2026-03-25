@@ -252,18 +252,20 @@ export async function refreshClaudeOAuthToken(refreshToken, log) {
  * Specialized refresh for Google providers (Gemini, Antigravity)
  */
 export async function refreshGoogleToken(refreshToken, clientId, clientSecret, log) {
+  const params = new URLSearchParams({
+    grant_type: "refresh_token",
+    refresh_token: refreshToken,
+  });
+  if (clientId) params.set("client_id", clientId);
+  if (clientSecret) params.set("client_secret", clientSecret);
+
   const response = await fetch(OAUTH_ENDPOINTS.google.token, {
     method: "POST",
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
       Accept: "application/json",
     },
-    body: new URLSearchParams({
-      grant_type: "refresh_token",
-      refresh_token: refreshToken,
-      client_id: clientId,
-      client_secret: clientSecret,
-    }),
+    body: params,
   });
 
   if (!response.ok) {

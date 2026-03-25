@@ -200,6 +200,8 @@ test.describe("Combos flow", () => {
     const quickTestButton = page.getByRole("button", { name: /test now|testar agora/i });
     await expect(quickTestButton).toBeVisible();
     await quickTestButton.click();
+    const testDialog = page.getByRole("dialog").last();
+    await testDialog.getByRole("button", { name: "Test now", exact: true }).click();
 
     await expect
       .poll(() => state.comboTestRequests, {
@@ -209,5 +211,218 @@ test.describe("Combos flow", () => {
 
     const testResultsModal = page.getByRole("dialog").last();
     await expect(testResultsModal).toContainText(/qa-test-model/i);
+  });
+
+  test("saving a combo proxy refreshes the combo card badge without page reload", async ({
+    page,
+  }) => {
+    const state: {
+      combos: ComboStub[];
+      sharedProxies: Array<{
+        id: string;
+        name: string;
+        type: string;
+        host: string;
+        port: number;
+        status: string;
+      }>;
+      assignedProxyId: string | null;
+      proxyConfigFetches: number;
+    } = {
+      combos: [
+        {
+          id: "combo-proxy-1",
+          name: "combo-proxy-1",
+          strategy: "priority",
+          models: ["openai/qa-test-model"],
+          config: {},
+          isActive: true,
+        },
+      ],
+      sharedProxies: [
+        {
+          id: "combo-shared-proxy",
+          name: "Combo Shared Proxy",
+          type: "http",
+          host: "combo.proxy.local",
+          port: 8080,
+          status: "active",
+        },
+      ],
+      assignedProxyId: null,
+      proxyConfigFetches: 0,
+    };
+
+    const getCurrentProxy = () =>
+      state.sharedProxies.find((proxy) => proxy.id === state.assignedProxyId) || null;
+
+    await page.route("**/api/combos/metrics", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ metrics: {} }),
+      });
+    });
+
+    await page.route("**/api/providers", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          connections: [{ id: "conn-openai", provider: "openai", testStatus: "active" }],
+        }),
+      });
+    });
+
+    await page.route("**/api/provider-nodes", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ nodes: [] }),
+      });
+    });
+
+    await page.route("**/api/settings/proxy", async (route) => {
+      state.proxyConfigFetches += 1;
+      const currentProxy = getCurrentProxy();
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          global: null,
+          providers: {},
+          keys: {},
+          combos: currentProxy
+            ? {
+                "combo-proxy-1": {
+                  type: currentProxy.type,
+                  host: currentProxy.host,
+                  port: currentProxy.port,
+                  username: "",
+                  password: "",
+                },
+              }
+            : {},
+        }),
+      });
+    });
+
+    await page.route("**/api/settings/proxies/resolve?*", async (route) => {
+      const proxy = getCurrentProxy();
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          scope: "combo",
+          scopeId: "combo-proxy-1",
+          assignment: proxy
+            ? {
+                id: 1,
+                proxyId: proxy.id,
+                scope: "combo",
+                scopeId: "combo-proxy-1",
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+                proxy: {
+                  type: proxy.type,
+                  host: proxy.host,
+                  port: proxy.port,
+                  username: "",
+                  password: "",
+                },
+                visibility: "shared",
+                status: proxy.status,
+              }
+            : null,
+          effective: proxy
+            ? {
+                level: "combo",
+                levelId: "combo-proxy-1",
+                source: "registry",
+                proxyId: proxy.id,
+                visibility: "shared",
+                status: proxy.status,
+                proxy: {
+                  type: proxy.type,
+                  host: proxy.host,
+                  port: proxy.port,
+                  username: "",
+                  password: "",
+                },
+              }
+            : {
+                level: "direct",
+                levelId: null,
+                source: "direct",
+                proxyId: null,
+                visibility: null,
+                status: null,
+                proxy: null,
+              },
+          inheritedFrom: null,
+          proxyId: proxy?.id || null,
+          visibility: proxy ? "shared" : null,
+          status: proxy?.status || null,
+        }),
+      });
+    });
+
+    await page.route("**/api/settings/proxies/assignments", async (route) => {
+      if (route.request().method() !== "PUT") {
+        await route.fulfill({
+          status: 405,
+          contentType: "application/json",
+          body: JSON.stringify({ error: "Method not allowed in test stub" }),
+        });
+        return;
+      }
+
+      const payload = route.request().postDataJSON() as { proxyId?: string | null };
+      state.assignedProxyId = payload.proxyId || null;
+
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ success: true, assignment: { proxyId: state.assignedProxyId } }),
+      });
+    });
+
+    await page.route("**/api/settings/proxies", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ items: state.sharedProxies, total: state.sharedProxies.length }),
+      });
+    });
+
+    await page.route("**/api/combos", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ combos: state.combos }),
+      });
+    });
+
+    await page.goto("/dashboard/combos");
+    await page.waitForLoadState("networkidle");
+
+    const redirectedToLogin = page.url().includes("/login");
+    test.skip(redirectedToLogin, "Authentication enabled without a login fixture.");
+
+    const comboCard = page.locator("div", { hasText: "combo-proxy-1" }).first();
+    await expect(comboCard).toBeVisible();
+    await expect(comboCard.getByTitle("Proxy configured")).toHaveCount(0);
+
+    await comboCard.getByTitle("Proxy configuration").click();
+    const dialog = page.getByRole("dialog").last();
+    await dialog.getByRole("combobox").selectOption("combo-shared-proxy");
+    await dialog.getByRole("button", { name: "Save", exact: true }).click();
+
+    await expect
+      .poll(() => state.proxyConfigFetches, {
+        message: "Expected combos page to refetch effective proxy state after save",
+      })
+      .toBeGreaterThan(1);
+    await expect(comboCard.getByTitle("Proxy configured")).toBeVisible();
   });
 });

@@ -4,13 +4,16 @@
 
 import { getDbInstance } from "./core";
 import { backupDbFile } from "./backup";
-import { PROVIDER_ID_TO_ALIAS } from "@omniroute/open-sse/config/providerModels.ts";
 import { invalidateDbCache } from "./readCache";
 import {
   getProxyAssignments,
+  getProxyAssignmentForScope,
+  clearProxyForScope,
   listProxies,
+  resolveProxyScopeStateFromRegistry,
   resolveProxyForConnectionFromRegistry,
   resolveProxyForScopeFromRegistry,
+  upsertManagedProxyForScope,
 } from "./proxies";
 
 type JsonRecord = Record<string, unknown>;
@@ -26,8 +29,6 @@ interface ProxyConfig {
   keys: ProxyMap;
   [key: string]: unknown;
 }
-
-type RegistryProxyScope = "global" | "provider" | "account" | "combo";
 
 function toRecord(value: unknown): JsonRecord {
   return value && typeof value === "object" ? (value as JsonRecord) : {};
@@ -66,39 +67,6 @@ function proxyValueFromRegistryRecord(value: unknown): JsonRecord | null {
     username: typeof record.username === "string" ? record.username : "",
     password: typeof record.password === "string" ? record.password : "",
   };
-}
-
-function normalizeRegistryProxyScope(level: string): RegistryProxyScope {
-  const value = String(level || "").toLowerCase();
-  if (value === "provider") return "provider";
-  if (value === "combo") return "combo";
-  if (value === "key" || value === "account") return "account";
-  return "global";
-}
-
-function clearRegistryProxyAssignment(level: string, id: string | null) {
-  const scope = normalizeRegistryProxyScope(level);
-  const scopeId = scope === "global" ? "__global__" : id;
-  const db = getDbInstance();
-  db.prepare("DELETE FROM proxy_assignments WHERE scope = ? AND scope_id IS ?").run(scope, scopeId);
-}
-
-function clearRegistryAssignmentsForConfig(config: Record<string, unknown>) {
-  if (config.global !== undefined) {
-    clearRegistryProxyAssignment("global", null);
-  }
-
-  for (const [mapKey, level] of [
-    ["providers", "provider"],
-    ["combos", "combo"],
-    ["keys", "key"],
-  ] as const) {
-    const value = config[mapKey];
-    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
-    for (const id of Object.keys(value)) {
-      clearRegistryProxyAssignment(level, id);
-    }
-  }
 }
 
 // ──────────────── Settings ────────────────
@@ -313,39 +281,7 @@ export async function resetAllPricing() {
 // ──────────────── Proxy Config ────────────────
 
 const DEFAULT_PROXY_CONFIG: ProxyConfig = { global: null, providers: {}, combos: {}, keys: {} };
-const ALIAS_TO_PROVIDER_ID = Object.entries(PROVIDER_ID_TO_ALIAS).reduce(
-  (acc, [providerId, alias]) => {
-    if (alias) acc[alias] = providerId;
-    acc[providerId] = providerId;
-    return acc;
-  },
-  {} as Record<string, string>
-);
-
-function resolveProviderAliasOrId(providerOrAlias: string): string {
-  if (typeof providerOrAlias !== "string") return providerOrAlias;
-  return ALIAS_TO_PROVIDER_ID[providerOrAlias] || providerOrAlias;
-}
-
-function getComboModelProvider(modelEntry: unknown): string | null {
-  const record = toRecord(modelEntry);
-  if (typeof record.provider === "string") {
-    return resolveProviderAliasOrId(record.provider);
-  }
-
-  const modelValue =
-    typeof modelEntry === "string"
-      ? modelEntry
-      : typeof record.model === "string"
-        ? record.model
-        : null;
-
-  if (!modelValue) return null;
-
-  const [providerOrAlias] = modelValue.split("/", 1);
-  if (!providerOrAlias) return null;
-  return resolveProviderAliasOrId(providerOrAlias);
-}
+let proxyNormalizationPromise: Promise<void> | null = null;
 
 function migrateProxyEntry(value: unknown): JsonRecord | null {
   if (!value) return null;
@@ -404,6 +340,22 @@ export async function getProxyConfig() {
       }
     }
   }
+  if (raw.combos) {
+    for (const [k, v] of Object.entries(raw.combos)) {
+      if (typeof v === "string") {
+        raw.combos[k] = migrateProxyEntry(v);
+        migrated = true;
+      }
+    }
+  }
+  if (raw.keys) {
+    for (const [k, v] of Object.entries(raw.keys)) {
+      if (typeof v === "string") {
+        raw.keys[k] = migrateProxyEntry(v);
+        migrated = true;
+      }
+    }
+  }
 
   if (migrated) {
     const insert = db.prepare(
@@ -411,16 +363,133 @@ export async function getProxyConfig() {
     );
     if (raw.global !== undefined) insert.run("global", JSON.stringify(raw.global));
     if (raw.providers) insert.run("providers", JSON.stringify(raw.providers));
+    if (raw.combos) insert.run("combos", JSON.stringify(raw.combos));
+    if (raw.keys) insert.run("keys", JSON.stringify(raw.keys));
   }
 
   return raw;
 }
 
+function levelToScope(level: string) {
+  const normalized = String(level || "").toLowerCase();
+  if (normalized === "provider") return "provider" as const;
+  if (normalized === "combo") return "combo" as const;
+  if (normalized === "key" || normalized === "account") return "account" as const;
+  return "global" as const;
+}
+
+function clearLegacyProxyConfigEntry(
+  scope: "global" | "provider" | "combo" | "account",
+  scopeId: string | null
+) {
+  const db = getDbInstance();
+
+  if (scope === "global") {
+    db.prepare("DELETE FROM key_value WHERE namespace = 'proxyConfig' AND key = 'global'").run();
+    return;
+  }
+
+  const mapKey = scope === "provider" ? "providers" : scope === "combo" ? "combos" : "keys";
+  const row = db
+    .prepare("SELECT value FROM key_value WHERE namespace = 'proxyConfig' AND key = ?")
+    .get(mapKey);
+  const record = toRecord(row);
+  const rawValue = typeof record.value === "string" ? record.value : null;
+  if (!rawValue || !scopeId) return;
+
+  let parsed: Record<string, unknown> = {};
+  try {
+    const json = JSON.parse(rawValue);
+    if (json && typeof json === "object" && !Array.isArray(json)) {
+      parsed = json as Record<string, unknown>;
+    }
+  } catch {
+    parsed = {};
+  }
+
+  if (!Object.prototype.hasOwnProperty.call(parsed, scopeId)) return;
+  delete parsed[scopeId];
+
+  if (Object.keys(parsed).length === 0) {
+    db.prepare("DELETE FROM key_value WHERE namespace = 'proxyConfig' AND key = ?").run(mapKey);
+    return;
+  }
+
+  db.prepare(
+    "INSERT OR REPLACE INTO key_value (namespace, key, value) VALUES ('proxyConfig', ?, ?)"
+  ).run(mapKey, JSON.stringify(parsed));
+}
+
+function normalizeProxyPayload(value: ProxyValue): JsonRecord | null {
+  const migrated = migrateProxyEntry(value);
+  if (!migrated) return null;
+  return proxyValueFromRegistryRecord(migrated);
+}
+
+async function normalizeLegacyProxyConfigToRegistry() {
+  if (proxyNormalizationPromise) {
+    await proxyNormalizationPromise;
+    return;
+  }
+
+  proxyNormalizationPromise = (async () => {
+    const raw = await getProxyConfig();
+
+    const applyEntry = async (
+      scope: "global" | "provider" | "combo" | "account",
+      scopeId: string | null,
+      value: unknown
+    ) => {
+      if (value === undefined) return;
+
+      const existing = await getProxyAssignmentForScope(scope, scopeId, {
+        includeSecrets: true,
+      });
+      if (existing) {
+        clearLegacyProxyConfigEntry(scope, scopeId);
+        return;
+      }
+
+      const normalized = normalizeProxyPayload(value as ProxyValue);
+      if (!normalized) return;
+
+      await upsertManagedProxyForScope(scope, scopeId, {
+        type: typeof normalized.type === "string" ? normalized.type : "http",
+        host: typeof normalized.host === "string" ? normalized.host : "",
+        port: Number(normalized.port) || 8080,
+        username: typeof normalized.username === "string" ? normalized.username : "",
+        password: typeof normalized.password === "string" ? normalized.password : "",
+        region: null,
+        notes: null,
+        status: "active",
+      });
+      clearLegacyProxyConfigEntry(scope, scopeId);
+    };
+
+    await applyEntry("global", null, raw.global);
+
+    for (const [providerId, value] of Object.entries(raw.providers || {})) {
+      await applyEntry("provider", providerId, value);
+    }
+    for (const [comboId, value] of Object.entries(raw.combos || {})) {
+      await applyEntry("combo", comboId, value);
+    }
+    for (const [connectionId, value] of Object.entries(raw.keys || {})) {
+      await applyEntry("account", connectionId, value);
+    }
+  })().finally(() => {
+    proxyNormalizationPromise = null;
+  });
+
+  await proxyNormalizationPromise;
+}
+
 export async function getEffectiveProxyConfig() {
-  const effective = cloneProxyConfig(await getProxyConfig());
+  await normalizeLegacyProxyConfigToRegistry();
+  const effective = cloneProxyConfig(DEFAULT_PROXY_CONFIG);
   const [assignments, proxies] = await Promise.all([
     getProxyAssignments(),
-    listProxies({ includeSecrets: true }),
+    listProxies({ includeSecrets: true, includeManaged: true, includeInactive: false }),
   ]);
 
   const proxyById = new Map(
@@ -459,100 +528,57 @@ export async function getEffectiveProxyConfig() {
 }
 
 export async function getProxyForLevel(level: string, id?: string | null) {
-  const config = await getEffectiveProxyConfig();
-  if (level === "global") return config.global || null;
-  const map = toProxyMap(config[level + "s"] || config[level] || {});
-  return (id ? map[id] : null) || null;
+  await normalizeLegacyProxyConfigToRegistry();
+  const resolved = await resolveProxyForScopeFromRegistry(levelToScope(level), id || null, {
+    includeSecrets: true,
+  });
+  return resolved?.proxy || null;
 }
 
 export async function setProxyForLevel(level: string, id: string | null, proxy: ProxyValue) {
-  const db = getDbInstance();
-  const config = await getProxyConfig();
-  clearRegistryProxyAssignment(level, id);
-
-  if (level === "global") {
-    config.global = proxy || null;
-    db.prepare(
-      "INSERT OR REPLACE INTO key_value (namespace, key, value) VALUES ('proxyConfig', 'global', ?)"
-    ).run(JSON.stringify(config.global));
-  } else {
-    const mapKey = level + "s";
-    const map = toProxyMap(config[mapKey] || {});
-    if (proxy && id) {
-      map[id] = proxy;
-    } else {
-      if (id) delete map[id];
-    }
-    config[mapKey] = map;
-    db.prepare(
-      "INSERT OR REPLACE INTO key_value (namespace, key, value) VALUES ('proxyConfig', ?, ?)"
-    ).run(mapKey, JSON.stringify(map));
+  await normalizeLegacyProxyConfigToRegistry();
+  const normalized = normalizeProxyPayload(proxy);
+  if (!normalized) {
+    throw Object.assign(new Error("Invalid proxy configuration"), {
+      status: 400,
+      type: "invalid_request",
+    });
   }
 
-  backupDbFile("pre-write");
+  await upsertManagedProxyForScope(levelToScope(level), id, {
+    type: typeof normalized.type === "string" ? normalized.type : "http",
+    host: typeof normalized.host === "string" ? normalized.host : "",
+    port: Number(normalized.port) || 8080,
+    username: typeof normalized.username === "string" ? normalized.username : "",
+    password: typeof normalized.password === "string" ? normalized.password : "",
+    region: null,
+    notes: null,
+    status: "active",
+  });
   return getEffectiveProxyConfig();
 }
 
 export async function deleteProxyForLevel(level: string, id: string | null) {
-  return setProxyForLevel(level, id, null);
+  await normalizeLegacyProxyConfigToRegistry();
+  await clearProxyForScope(levelToScope(level), id);
+  return getEffectiveProxyConfig();
 }
 
-export async function resolveProxyForConnection(connectionId: string) {
-  const registryResolved = await resolveProxyForConnectionFromRegistry(connectionId);
+export async function resolveProxyScopeState(level: string, id: string | null) {
+  await normalizeLegacyProxyConfigToRegistry();
+  return resolveProxyScopeStateFromRegistry(levelToScope(level), id, {
+    includeSecrets: true,
+  });
+}
+
+export async function resolveProxyForConnection(
+  connectionId: string,
+  options?: { comboId?: string | null; comboName?: string | null }
+) {
+  await normalizeLegacyProxyConfigToRegistry();
+  const registryResolved = await resolveProxyForConnectionFromRegistry(connectionId, options);
   if (registryResolved?.proxy) {
     return registryResolved;
-  }
-
-  const config = await getProxyConfig();
-
-  if (connectionId && config.keys?.[connectionId]) {
-    return { proxy: config.keys[connectionId], level: "key", levelId: connectionId };
-  }
-
-  const db = getDbInstance();
-  const connection = db
-    .prepare("SELECT provider FROM provider_connections WHERE id = ?")
-    .get(connectionId);
-
-  if (connection) {
-    const connectionRecord = toRecord(connection);
-    const provider =
-      typeof connectionRecord.provider === "string" ? connectionRecord.provider : null;
-    if (config.combos && Object.keys(config.combos).length > 0) {
-      const combos = db.prepare("SELECT id, data FROM combos").all();
-      for (const comboRow of combos) {
-        const comboRecord = toRecord(comboRow);
-        const comboId = typeof comboRecord.id === "string" ? comboRecord.id : null;
-        if (comboId && config.combos[comboId]) {
-          try {
-            const comboRaw = typeof comboRecord.data === "string" ? comboRecord.data : null;
-            if (!comboRaw) continue;
-            const combo = toRecord(JSON.parse(comboRaw));
-            const comboModels = Array.isArray(combo.models) ? combo.models : [];
-            const usesProvider = comboModels.some(
-              (entry) => getComboModelProvider(entry) === provider
-            );
-            if (usesProvider) {
-              return { proxy: config.combos[comboId], level: "combo", levelId: comboId };
-            }
-          } catch {
-            // Ignore malformed combo records during proxy resolution.
-          }
-        }
-      }
-    }
-
-    if (provider && config.providers?.[provider]) {
-      return {
-        proxy: config.providers[provider],
-        level: "provider",
-        levelId: provider,
-      };
-    }
-  }
-
-  if (config.global) {
-    return { proxy: config.global, level: "global", levelId: null };
   }
 
   return { proxy: null, level: "direct", levelId: null };
@@ -562,6 +588,7 @@ export async function resolveProxyForProviderOperation(options: {
   provider?: string | null;
   connectionId?: string | null;
 }) {
+  await normalizeLegacyProxyConfigToRegistry();
   const connectionId =
     typeof options?.connectionId === "string" && options.connectionId.trim().length > 0
       ? options.connectionId.trim()
@@ -584,92 +611,71 @@ export async function resolveProxyForProviderOperation(options: {
         : null;
   }
 
-  // Management-plane operations should not inherit combo routing.
-  // Keep them scoped to account -> provider -> global -> direct.
   if (connectionId) {
-    const accountRegistryProxy = await resolveProxyForScopeFromRegistry("account", connectionId);
+    const accountRegistryProxy = await resolveProxyForScopeFromRegistry("account", connectionId, {
+      includeSecrets: true,
+    });
     if (accountRegistryProxy?.proxy) {
       return accountRegistryProxy;
     }
   }
 
   if (provider) {
-    const providerRegistryProxy = await resolveProxyForScopeFromRegistry("provider", provider);
+    const providerRegistryProxy = await resolveProxyForScopeFromRegistry("provider", provider, {
+      includeSecrets: true,
+    });
     if (providerRegistryProxy?.proxy) {
       return providerRegistryProxy;
     }
   }
 
-  const globalRegistryProxy = await resolveProxyForScopeFromRegistry("global", null);
+  const globalRegistryProxy = await resolveProxyForScopeFromRegistry("global", null, {
+    includeSecrets: true,
+  });
   if (globalRegistryProxy?.proxy) {
     return globalRegistryProxy;
-  }
-
-  const config = await getProxyConfig();
-
-  if (connectionId && config.keys?.[connectionId]) {
-    return {
-      proxy: config.keys[connectionId],
-      level: "account",
-      levelId: connectionId,
-      source: "legacy",
-    };
-  }
-
-  if (provider && config.providers?.[provider]) {
-    return {
-      proxy: config.providers[provider],
-      level: "provider",
-      levelId: provider,
-      source: "legacy",
-    };
-  }
-
-  if (config.global) {
-    return {
-      proxy: config.global,
-      level: "global",
-      levelId: null,
-      source: "legacy",
-    };
   }
 
   return { proxy: null, level: "direct", levelId: null, source: "direct" };
 }
 
 export async function setProxyConfig(config: Record<string, unknown>) {
+  await normalizeLegacyProxyConfigToRegistry();
+
   if (config.level !== undefined) {
     const level = typeof config.level === "string" ? config.level : "global";
     const id = typeof config.id === "string" ? config.id : null;
+    if (config.proxy === null) {
+      await clearProxyForScope(levelToScope(level), id);
+      return getEffectiveProxyConfig();
+    }
     const proxy = (config.proxy as ProxyValue) || null;
     return setProxyForLevel(level, id, proxy);
   }
 
-  const db = getDbInstance();
-  const current = await getProxyConfig();
-  const insert = db.prepare(
-    "INSERT OR REPLACE INTO key_value (namespace, key, value) VALUES ('proxyConfig', ?, ?)"
-  );
-
-  const tx = db.transaction(() => {
-    clearRegistryAssignmentsForConfig(config);
-    if (config.global !== undefined) {
-      current.global = toProxyValue(config.global);
-      insert.run("global", JSON.stringify(current.global));
+  if (Object.prototype.hasOwnProperty.call(config, "global")) {
+    if (config.global === null) {
+      await clearProxyForScope("global", null);
+    } else if (config.global !== undefined) {
+      await setProxyForLevel("global", null, config.global as ProxyValue);
     }
-    for (const mapKey of ["providers", "combos", "keys"]) {
-      if (config[mapKey]) {
-        const merged = { ...toProxyMap(current[mapKey]), ...toProxyMap(config[mapKey]) };
-        for (const [k, v] of Object.entries(merged)) {
-          if (!v) delete merged[k];
-        }
-        current[mapKey] = merged;
-        insert.run(mapKey, JSON.stringify(merged));
+  }
+
+  for (const [mapKey, level] of [
+    ["providers", "provider"],
+    ["combos", "combo"],
+    ["keys", "key"],
+  ] as const) {
+    const value = config[mapKey];
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    for (const [scopeId, proxyValue] of Object.entries(value)) {
+      if (proxyValue === null) {
+        await clearProxyForScope(levelToScope(level), scopeId);
+      } else if (proxyValue !== undefined) {
+        await setProxyForLevel(level, scopeId, proxyValue as ProxyValue);
       }
     }
-  });
-  tx();
+  }
 
-  backupDbFile("pre-write");
   return getEffectiveProxyConfig();
 }

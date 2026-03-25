@@ -9,28 +9,13 @@ import { clearDispatcherCache } from "@omniroute/open-sse/utils/proxyDispatcher"
 import { updateProxyConfigSchema } from "@/shared/validation/schemas";
 import { isValidationFailure, validateBody } from "@/shared/validation/helpers";
 import { createErrorResponse, createErrorResponseFromUnknown } from "@/lib/api/errorResponse";
+import { normalizeAndValidateProxyType } from "@/lib/proxyValidation";
 import type { z } from "zod";
 
-const BASE_SUPPORTED_PROXY_TYPES = new Set(["http", "https"]);
 type UpdateProxyConfigInput = z.infer<typeof updateProxyConfigSchema>;
 type ProxyConfigInput = NonNullable<UpdateProxyConfigInput["proxy"]>;
 type ProxyMapInput = Record<string, ProxyConfigInput | null>;
 type ApiRouteError = Error & { status?: number; type?: string };
-
-function isSocks5Enabled() {
-  return process.env.ENABLE_SOCKS5_PROXY === "true";
-}
-
-function getSupportedProxyTypes() {
-  if (isSocks5Enabled()) {
-    return new Set([...BASE_SUPPORTED_PROXY_TYPES, "socks5"]);
-  }
-  return BASE_SUPPORTED_PROXY_TYPES;
-}
-
-function supportedTypesMessage() {
-  return isSocks5Enabled() ? "http, https, or socks5" : "http or https";
-}
 
 function createInvalidProxyError(message: string): ApiRouteError {
   const error = new Error(message) as ApiRouteError;
@@ -55,18 +40,9 @@ function normalizeAndValidateProxy(
     throw createInvalidProxyError(`${pathLabel} must be an object`);
   }
 
-  const type = String(proxy.type || "http").toLowerCase() as NonNullable<ProxyConfigInput["type"]>;
-  if (type === "socks5" && !isSocks5Enabled()) {
-    throw createInvalidProxyError(
-      "SOCKS5 proxy is disabled (set ENABLE_SOCKS5_PROXY=true to enable)"
-    );
-  }
-  if (type.startsWith("socks") && type !== "socks5") {
-    throw createInvalidProxyError(`${pathLabel}.type must be ${supportedTypesMessage()}`);
-  }
-  if (!getSupportedProxyTypes().has(type)) {
-    throw createInvalidProxyError(`${pathLabel}.type must be ${supportedTypesMessage()}`);
-  }
+  const type = normalizeAndValidateProxyType(proxy.type, `${pathLabel}.type`) as NonNullable<
+    ProxyConfigInput["type"]
+  >;
 
   return { ...proxy, type } as ProxyConfigInput;
 }

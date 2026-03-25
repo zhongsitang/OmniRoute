@@ -9,11 +9,13 @@ process.env.DATA_DIR = TEST_DATA_DIR;
 
 const core = await import("../../src/lib/db/core.ts");
 const providersDb = await import("../../src/lib/db/providers.ts");
+const proxyFacadeRoute = await import("../../src/app/api/settings/proxy/route.ts");
 const proxySettingsRoute = await import("../../src/app/api/settings/proxies/route.ts");
 const proxyAssignmentsRoute =
   await import("../../src/app/api/settings/proxies/assignments/route.ts");
 const proxyBulkRoute = await import("../../src/app/api/settings/proxies/bulk-assign/route.ts");
 const proxyHealthRoute = await import("../../src/app/api/settings/proxies/health/route.ts");
+const proxyResolveRoute = await import("../../src/app/api/settings/proxies/resolve/route.ts");
 const proxyLogger = await import("../../src/lib/proxyLogger.ts");
 
 async function resetStorage() {
@@ -25,6 +27,62 @@ async function resetStorage() {
 test.after(async () => {
   core.resetDbInstance();
   fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+});
+
+test("integration: settings proxy registry rejects socks5 writes when socks5 is disabled", async () => {
+  await resetStorage();
+
+  const originalEnableSocks5 = process.env.ENABLE_SOCKS5_PROXY;
+  delete process.env.ENABLE_SOCKS5_PROXY;
+
+  try {
+    const createRes = await proxySettingsRoute.POST(
+      new Request("http://localhost/api/settings/proxies", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: "Disabled Socks Proxy",
+          type: "socks5",
+          host: "socks-disabled.local",
+          port: 1080,
+        }),
+      })
+    );
+    assert.equal(createRes.status, 400);
+
+    const httpCreateRes = await proxySettingsRoute.POST(
+      new Request("http://localhost/api/settings/proxies", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: "HTTP Proxy",
+          type: "http",
+          host: "http-only.local",
+          port: 8080,
+        }),
+      })
+    );
+    assert.equal(httpCreateRes.status, 201);
+    const created = await httpCreateRes.json();
+
+    const patchRes = await proxySettingsRoute.PATCH(
+      new Request("http://localhost/api/settings/proxies", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: created.id,
+          type: "socks5",
+        }),
+      })
+    );
+    assert.equal(patchRes.status, 400);
+  } finally {
+    if (originalEnableSocks5 === undefined) {
+      delete process.env.ENABLE_SOCKS5_PROXY;
+    } else {
+      process.env.ENABLE_SOCKS5_PROXY = originalEnableSocks5;
+    }
+  }
 });
 
 test("integration: proxy registry full flow works and enforces safe delete", async () => {
@@ -165,4 +223,80 @@ test("integration: proxy registry full flow works and enforces safe delete", asy
   assert.equal(deleteOkRes.status, 200);
   const deleteOkPayload = await deleteOkRes.json();
   assert.equal(deleteOkPayload.success, true);
+});
+
+test("integration: managed proxies stay out of default picker list and resolve route exposes scope state", async () => {
+  await resetStorage();
+
+  const connection = await providersDb.createProviderConnection({
+    provider: "openai",
+    authType: "apikey",
+    name: "managed-list-flow",
+    apiKey: "sk-flow-managed",
+  });
+
+  const sharedCreateRes = await proxySettingsRoute.POST(
+    new Request("http://localhost/api/settings/proxies", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "Shared Picker Proxy",
+        type: "http",
+        host: "shared-picker.local",
+        port: 8080,
+      }),
+    })
+  );
+  assert.equal(sharedCreateRes.status, 201);
+  const sharedProxy = await sharedCreateRes.json();
+
+  const managedWriteRes = await proxyFacadeRoute.PUT(
+    new Request("http://localhost/api/settings/proxy", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        level: "key",
+        id: connection.id,
+        proxy: {
+          type: "https",
+          host: "managed-picker.local",
+          port: "8443",
+          username: "agent",
+          password: "secret",
+        },
+      }),
+    })
+  );
+  assert.equal(managedWriteRes.status, 200);
+
+  const defaultListRes = await proxySettingsRoute.GET(
+    new Request("http://localhost/api/settings/proxies")
+  );
+  assert.equal(defaultListRes.status, 200);
+  const defaultList = await defaultListRes.json();
+  assert.deepEqual(
+    defaultList.items.map((item) => item.id),
+    [sharedProxy.id]
+  );
+
+  const fullListRes = await proxySettingsRoute.GET(
+    new Request("http://localhost/api/settings/proxies?includeManaged=1")
+  );
+  assert.equal(fullListRes.status, 200);
+  const fullList = await fullListRes.json();
+  assert.equal(fullList.items.length, 2);
+  assert.equal(
+    fullList.items.some((item) => item.visibility === "managed"),
+    true
+  );
+
+  const resolveRes = await proxyResolveRoute.GET(
+    new Request(`http://localhost/api/settings/proxies/resolve?scope=key&scopeId=${connection.id}`)
+  );
+  assert.equal(resolveRes.status, 200);
+  const resolvePayload = await resolveRes.json();
+  assert.equal(resolvePayload.assignment.visibility, "managed");
+  assert.equal(resolvePayload.assignment.proxy.host, "managed-picker.local");
+  assert.equal(resolvePayload.effective.level, "account");
+  assert.equal(resolvePayload.inheritedFrom, null);
 });

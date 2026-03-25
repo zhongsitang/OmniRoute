@@ -367,7 +367,7 @@ async function handleSingleModelChat(
     log.info("AUTH", `Using ${provider} account: ${accountId}...`);
 
     const refreshedCredentials = await checkAndRefreshToken(provider, credentials);
-    const proxyInfo = await safeResolveProxy(credentials.connectionId);
+    const proxyInfo = await safeResolveProxy(credentials.connectionId, comboName);
     const proxyStartTime = Date.now();
 
     // 4. Execute chat via core (with circuit breaker + optional TLS)
@@ -493,7 +493,8 @@ async function handleSingleModelChat(
         provider,
         credentials,
         refreshedCredentials,
-        result.error
+        result.error,
+        comboName
       );
     }
 
@@ -749,9 +750,9 @@ function registerPreflightQuotaModelLockouts(
   }
 }
 
-async function safeResolveProxy(connectionId: string) {
+async function safeResolveProxy(connectionId: string, comboName: string | null = null) {
   try {
-    return await resolveProxyForConnection(connectionId);
+    return await resolveProxyForConnection(connectionId, comboName ? { comboName } : undefined);
   } catch (proxyErr: any) {
     log.debug("PROXY", `Failed to resolve proxy: ${proxyErr.message}`);
     return null;
@@ -771,12 +772,13 @@ async function syncCompatibleQuotaStateFromFailure(
   provider: string,
   credentials: any,
   refreshedCredentials: any,
-  errorText: string | null
+  errorText: string | null,
+  comboName: string | null
 ) {
   let exactResetAt: string | null = null;
 
   try {
-    const proxyInfo = await safeResolveProxy(credentials.connectionId);
+    const proxyInfo = await safeResolveProxy(credentials.connectionId, comboName);
     const usageConnection = {
       provider,
       apiKey: credentials.apiKey || null,

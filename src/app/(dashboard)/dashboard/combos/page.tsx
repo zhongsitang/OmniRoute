@@ -472,13 +472,21 @@ export default function CombosPage() {
     }
   }, []);
 
+  const loadProxyConfig = useCallback(async () => {
+    try {
+      const res = await fetch("/api/settings/proxy", { cache: "no-store" });
+      if (!res.ok) return;
+      const data = await res.json();
+      setProxyConfig(data);
+    } catch {
+      // Ignore proxy indicator refresh failures in the page shell.
+    }
+  }, []);
+
   useEffect(() => {
     fetchData();
-    fetch("/api/settings/proxy")
-      .then((r) => (r.ok ? r.json() : null))
-      .then((c) => setProxyConfig(c))
-      .catch(() => {});
-  }, []);
+    void loadProxyConfig();
+  }, [loadProxyConfig]);
 
   useEffect(() => {
     try {
@@ -957,6 +965,7 @@ export default function CombosPage() {
           level="combo"
           levelId={proxyTargetCombo.id}
           levelLabel={proxyTargetCombo.name}
+          onSaved={loadProxyConfig}
         />
       )}
     </div>

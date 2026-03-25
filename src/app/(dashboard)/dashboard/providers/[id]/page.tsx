@@ -627,6 +627,17 @@ export default function ProviderDetailPage() {
     }
   }, [providerId, isCompatible]);
 
+  const loadProxyConfig = useCallback(async () => {
+    try {
+      const res = await fetch("/api/settings/proxy", { cache: "no-store" });
+      if (!res.ok) return;
+      const data = await res.json();
+      setProxyConfig(data);
+    } catch {
+      // Ignore proxy indicator refresh failures in the page shell.
+    }
+  }, []);
+
   const handleUpdateNode = async (formData) => {
     try {
       const res = await fetch(`/api/provider-nodes/${providerId}`, {
@@ -648,12 +659,8 @@ export default function ProviderDetailPage() {
   useEffect(() => {
     fetchConnections();
     fetchAliases();
-    // Load proxy config for visual indicators
-    fetch("/api/settings/proxy")
-      .then((r) => (r.ok ? r.json() : null))
-      .then((c) => setProxyConfig(c))
-      .catch(() => {});
-  }, [fetchConnections, fetchAliases]);
+    void loadProxyConfig();
+  }, [fetchConnections, fetchAliases, loadProxyConfig]);
 
   useEffect(() => {
     if (loading || isSearchProvider) return;
@@ -1898,6 +1905,7 @@ export default function ProviderDetailPage() {
           level={proxyTarget.level}
           levelId={proxyTarget.id}
           levelLabel={proxyTarget.label}
+          onSaved={loadProxyConfig}
         />
       )}
       {/* Import Progress Modal */}

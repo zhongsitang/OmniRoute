@@ -1,32 +1,19 @@
 import { request as undiciRequest } from "undici";
 import {
   createProxyDispatcher,
-  isSocks5ProxyEnabled,
   proxyConfigToUrl,
   proxyUrlForLogs,
 } from "@omniroute/open-sse/utils/proxyDispatcher.ts";
 import { testProxySchema } from "@/shared/validation/schemas";
 import { isValidationFailure, validateBody } from "@/shared/validation/helpers";
 import { createErrorResponse, createErrorResponseFromUnknown } from "@/lib/api/errorResponse";
-
-const BASE_SUPPORTED_PROXY_TYPES = new Set(["http", "https"]);
+import { isSocks5ProxyEnabled, normalizeAndValidateProxyType } from "@/lib/proxyValidation";
 
 function getErrorMessage(error: unknown, fallbackMessage: string): string {
   if (error instanceof Error && error.message) {
     return error.message;
   }
   return fallbackMessage;
-}
-
-function getSupportedProxyTypes() {
-  if (isSocks5ProxyEnabled()) {
-    return new Set([...BASE_SUPPORTED_PROXY_TYPES, "socks5"]);
-  }
-  return BASE_SUPPORTED_PROXY_TYPES;
-}
-
-function supportedTypesMessage() {
-  return isSocks5ProxyEnabled() ? "http, https, or socks5" : "http or https";
 }
 
 /**
@@ -58,28 +45,7 @@ export async function POST(request: Request) {
     }
     const { proxy } = validation.data;
 
-    const proxyType = String(proxy.type || "http").toLowerCase();
-    if (proxyType === "socks5" && !isSocks5ProxyEnabled()) {
-      return createErrorResponse({
-        status: 400,
-        message: "SOCKS5 proxy is disabled (set ENABLE_SOCKS5_PROXY=true to enable)",
-        type: "invalid_request",
-      });
-    }
-    if (proxyType.startsWith("socks") && proxyType !== "socks5") {
-      return createErrorResponse({
-        status: 400,
-        message: `proxy.type must be ${supportedTypesMessage()}`,
-        type: "invalid_request",
-      });
-    }
-    if (!getSupportedProxyTypes().has(proxyType)) {
-      return createErrorResponse({
-        status: 400,
-        message: `proxy.type must be ${supportedTypesMessage()}`,
-        type: "invalid_request",
-      });
-    }
+    const proxyType = normalizeAndValidateProxyType(proxy.type, "proxy.type");
 
     let proxyUrl: string;
     try {

@@ -262,7 +262,7 @@ test('provider connection migration adds "group" column for existing databases',
   assert.equal(names.has("group"), true);
 });
 
-test("resolveProxyForConnection applies combo proxy for object/string model entries", async () => {
+test("resolveProxyForConnection applies combo proxy only when combo context is supplied", async () => {
   await resetStorage();
 
   const conn = await providersDb.createProviderConnection({
@@ -286,7 +286,13 @@ test("resolveProxyForConnection applies combo proxy for object/string model entr
     port: "8080",
   });
 
-  const resolved = await settingsDb.resolveProxyForConnection(conn.id);
+  const withoutComboContext = await settingsDb.resolveProxyForConnection(conn.id);
+  assert.equal(withoutComboContext.level, "direct");
+  assert.equal(withoutComboContext.proxy, null);
+
+  const resolved = await settingsDb.resolveProxyForConnection(conn.id, {
+    comboName: combo.name,
+  });
   assert.equal(resolved.level, "combo");
   assert.equal(resolved.levelId, combo.id);
 });

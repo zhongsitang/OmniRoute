@@ -14,7 +14,7 @@ export default function ProxyTab() {
 
   const loadGlobalProxy = async () => {
     try {
-      const res = await fetch("/api/settings/proxy?level=global");
+      const res = await fetch("/api/settings/proxy?level=global", { cache: "no-store" });
       if (res.ok) {
         const data = await res.json();
         setGlobalProxy(data.proxy || null);
@@ -26,7 +26,7 @@ export default function ProxyTab() {
     mountedRef.current = true;
     async function init() {
       try {
-        const res = await fetch("/api/settings/proxy?level=global");
+        const res = await fetch("/api/settings/proxy?level=global", { cache: "no-store" });
         if (!mountedRef.current) return;
         if (res.ok) {
           const data = await res.json();

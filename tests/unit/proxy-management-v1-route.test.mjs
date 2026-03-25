@@ -15,6 +15,8 @@ const proxyAssignmentsV1Route =
 const proxyHealthV1Route = await import("../../src/app/api/v1/management/proxies/health/route.ts");
 const proxyBulkAssignV1Route =
   await import("../../src/app/api/v1/management/proxies/bulk-assign/route.ts");
+const proxyResolveV1Route =
+  await import("../../src/app/api/v1/management/proxies/resolve/route.ts");
 const proxyLogger = await import("../../src/lib/proxyLogger.ts");
 
 async function resetStorage() {
@@ -26,6 +28,62 @@ async function resetStorage() {
 test.after(async () => {
   core.resetDbInstance();
   fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+});
+
+test("v1 management proxies rejects socks5 writes when socks5 is disabled", async () => {
+  await resetStorage();
+
+  const originalEnableSocks5 = process.env.ENABLE_SOCKS5_PROXY;
+  delete process.env.ENABLE_SOCKS5_PROXY;
+
+  try {
+    const createRes = await proxyV1Route.POST(
+      new Request("http://localhost/api/v1/management/proxies", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: "Disabled V1 SOCKS",
+          type: "socks5",
+          host: "v1-socks-disabled.local",
+          port: 1080,
+        }),
+      })
+    );
+    assert.equal(createRes.status, 400);
+
+    const httpCreateRes = await proxyV1Route.POST(
+      new Request("http://localhost/api/v1/management/proxies", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: "V1 HTTP Proxy",
+          type: "http",
+          host: "v1-http.local",
+          port: 8080,
+        }),
+      })
+    );
+    assert.equal(httpCreateRes.status, 201);
+    const created = await httpCreateRes.json();
+
+    const patchRes = await proxyV1Route.PATCH(
+      new Request("http://localhost/api/v1/management/proxies", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: created.id,
+          type: "socks5",
+        }),
+      })
+    );
+    assert.equal(patchRes.status, 400);
+  } finally {
+    if (originalEnableSocks5 === undefined) {
+      delete process.env.ENABLE_SOCKS5_PROXY;
+    } else {
+      process.env.ENABLE_SOCKS5_PROXY = originalEnableSocks5;
+    }
+  }
 });
 
 test("v1 management proxies supports create/list/pagination", async () => {
@@ -199,4 +257,13 @@ test("v1 bulk assignment updates multiple scope IDs in one request", async () =>
   );
   const checkPayload = await checkRes.json();
   assert.equal(checkPayload.items.length >= 2, true);
+});
+
+test("v1 resolve route rejects invalid scope values", async () => {
+  await resetStorage();
+
+  const res = await proxyResolveV1Route.GET(
+    new Request("http://localhost/api/v1/management/proxies/resolve?scope=typo&scope_id=abc")
+  );
+  assert.equal(res.status, 400);
 });

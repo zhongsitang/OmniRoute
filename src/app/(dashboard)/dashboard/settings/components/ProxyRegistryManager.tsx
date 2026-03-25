@@ -9,6 +9,9 @@ type ProxyItem = {
   type: string;
   host: string;
   port: number;
+  visibility?: string;
+  ownerScope?: string | null;
+  ownerScopeId?: string | null;
   region?: string | null;
   notes?: string | null;
   status?: string;
@@ -26,6 +29,16 @@ type HealthInfo = {
   avgLatencyMs: number | null;
   lastSeenAt: string | null;
 };
+
+const ALL_PROXY_TYPES = [
+  { value: "http", label: "HTTP" },
+  { value: "https", label: "HTTPS" },
+  { value: "socks5", label: "SOCKS5" },
+];
+const SOCKS5_UI_ENABLED = process.env.NEXT_PUBLIC_ENABLE_SOCKS5_PROXY === "true";
+const PROXY_TYPES = SOCKS5_UI_ENABLED
+  ? ALL_PROXY_TYPES
+  : ALL_PROXY_TYPES.filter((type) => type.value !== "socks5");
 
 const EMPTY_FORM = {
   id: "",
@@ -59,10 +72,25 @@ export default function ProxyRegistryManager() {
   const [bulkProxyId, setBulkProxyId] = useState("");
 
   const editingId = useMemo(() => form.id || "", [form.id]);
+  const assignableItems = useMemo(
+    () =>
+      items.filter(
+        (item) => item.visibility !== "managed" && (item.status || "active") === "active"
+      ),
+    [items]
+  );
+  const hasUnsupportedSocks5Type = !SOCKS5_UI_ENABLED && form.type === "socks5";
+  const proxyTypeOptions = useMemo(
+    () =>
+      hasUnsupportedSocks5Type
+        ? [{ value: "socks5", label: "SOCKS5 (Disabled)" }, ...PROXY_TYPES]
+        : PROXY_TYPES,
+    [hasUnsupportedSocks5Type]
+  );
 
   const loadHealth = useCallback(async () => {
     try {
-      const res = await fetch("/api/settings/proxies/health?hours=24");
+      const res = await fetch("/api/settings/proxies/health?hours=24", { cache: "no-store" });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) return;
       const entries = Array.isArray(data?.items) ? data.items : [];
@@ -79,7 +107,9 @@ export default function ProxyRegistryManager() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/settings/proxies");
+      const res = await fetch("/api/settings/proxies?includeManaged=1&includeInactive=1", {
+        cache: "no-store",
+      });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         setError(data?.error?.message || "Failed to load proxy registry");
@@ -101,17 +131,25 @@ export default function ProxyRegistryManager() {
   }, [load]);
 
   useEffect(() => {
-    if (items.length > 0 && !bulkProxyId) {
-      setBulkProxyId(items[0].id);
+    if (assignableItems.length === 0) {
+      if (bulkProxyId) setBulkProxyId("");
+      return;
     }
-  }, [items, bulkProxyId]);
+
+    const hasCurrent = assignableItems.some((item) => item.id === bulkProxyId);
+    if (!hasCurrent) {
+      setBulkProxyId(assignableItems[0].id);
+    }
+  }, [assignableItems, bulkProxyId]);
 
   const openCreate = () => {
+    setError(null);
     setForm(EMPTY_FORM);
     setModalOpen(true);
   };
 
   const openEdit = (item: ProxyItem) => {
+    setError(null);
     setForm({
       id: item.id,
       name: item.name || "",
@@ -130,7 +168,8 @@ export default function ProxyRegistryManager() {
   const loadUsage = async (proxyId: string) => {
     try {
       const res = await fetch(
-        `/api/settings/proxies?id=${encodeURIComponent(proxyId)}&whereUsed=1`
+        `/api/settings/proxies?id=${encodeURIComponent(proxyId)}&whereUsed=1`,
+        { cache: "no-store" }
       );
       const data = await res.json().catch(() => ({}));
       if (!res.ok) return;
@@ -147,6 +186,10 @@ export default function ProxyRegistryManager() {
   };
 
   const handleSave = async () => {
+    if (hasUnsupportedSocks5Type) {
+      setError("SOCKS5 is disabled in this deployment. Switch this proxy to HTTP or HTTPS.");
+      return;
+    }
     if (!form.name.trim() || !form.host.trim()) {
       setError("Name and host are required");
       return;
@@ -365,6 +408,11 @@ export default function ProxyRegistryManager() {
                     <tr key={item.id} className="border-b border-border/60">
                       <td className="py-2 pr-3">
                         <div className="font-medium text-text-main">{item.name}</div>
+                        <div className="text-xs text-text-muted">
+                          {item.visibility === "managed"
+                            ? `managed (${item.ownerScope || "global"}${item.ownerScopeId ? `/${item.ownerScopeId}` : ""})`
+                            : "shared"}
+                        </div>
                         {item.region && (
                           <div className="text-xs text-text-muted">{item.region}</div>
                         )}
@@ -437,6 +485,11 @@ export default function ProxyRegistryManager() {
         maxWidth="lg"
       >
         <div className="flex flex-col gap-3">
+          {hasUnsupportedSocks5Type && (
+            <div className="px-3 py-2 rounded border border-amber-500/30 bg-amber-500/10 text-sm text-amber-300">
+              SOCKS5 is disabled in this deployment. Choose HTTP or HTTPS before saving this proxy.
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="text-xs text-text-muted mb-1 block">Name</label>
@@ -454,9 +507,11 @@ export default function ProxyRegistryManager() {
                 value={form.type}
                 onChange={(e) => setForm((prev) => ({ ...prev, type: e.target.value }))}
               >
-                <option value="http">HTTP</option>
-                <option value="https">HTTPS</option>
-                <option value="socks5">SOCKS5</option>
+                {proxyTypeOptions.map((type) => (
+                  <option key={type.value} value={type.value}>
+                    {type.label}
+                  </option>
+                ))}
               </select>
             </div>
             <div>
@@ -530,7 +585,13 @@ export default function ProxyRegistryManager() {
             <Button size="sm" variant="secondary" onClick={() => setModalOpen(false)}>
               Cancel
             </Button>
-            <Button size="sm" icon="save" onClick={handleSave} loading={saving}>
+            <Button
+              size="sm"
+              icon="save"
+              onClick={handleSave}
+              loading={saving}
+              disabled={hasUnsupportedSocks5Type}
+            >
               Save
             </Button>
           </div>
@@ -568,7 +629,7 @@ export default function ProxyRegistryManager() {
                 onChange={(e) => setBulkProxyId(e.target.value)}
               >
                 <option value="">(clear assignment)</option>
-                {items.map((item) => (
+                {assignableItems.map((item) => (
                   <option key={item.id} value={item.id}>
                     {item.name} ({item.type}://{item.host}:{item.port})
                   </option>

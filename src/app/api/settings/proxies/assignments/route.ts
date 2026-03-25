@@ -1,4 +1,8 @@
-import { assignProxyToScope, getProxyAssignments, resolveProxyForConnection } from "@/lib/localDb";
+import {
+  getProxyAssignments,
+  resolveProxyForConnection,
+  setSharedProxyForScope,
+} from "@/lib/localDb";
 import { proxyAssignmentSchema } from "@/shared/validation/schemas";
 import { isValidationFailure, validateBody } from "@/shared/validation/helpers";
 import { createErrorResponse, createErrorResponseFromUnknown } from "@/lib/api/errorResponse";
@@ -54,7 +58,7 @@ export async function PUT(request: Request) {
     }
 
     const { scope, scopeId, proxyId } = validation.data;
-    const assigned = await assignProxyToScope(scope, scopeId || null, proxyId || null);
+    const assigned = await setSharedProxyForScope(scope, scopeId || null, proxyId || null);
     clearDispatcherCache();
     return Response.json({ success: true, assignment: assigned });
   } catch (error) {

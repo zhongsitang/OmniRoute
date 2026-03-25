@@ -9,12 +9,15 @@ import {
 import { createProxyRegistrySchema, updateProxyRegistrySchema } from "@/shared/validation/schemas";
 import { isValidationFailure, validateBody } from "@/shared/validation/helpers";
 import { createErrorResponse, createErrorResponseFromUnknown } from "@/lib/api/errorResponse";
+import { normalizeAndValidateProxyType } from "@/lib/proxyValidation";
 
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const id = searchParams.get("id");
     const whereUsed = searchParams.get("whereUsed") === "1";
+    const includeManaged = searchParams.get("includeManaged") === "1";
+    const includeInactive = searchParams.get("includeInactive") === "1";
 
     if (id && whereUsed) {
       const usage = await getProxyWhereUsed(id);
@@ -29,7 +32,11 @@ export async function GET(request: Request) {
       return Response.json(proxy);
     }
 
-    const proxies = await listProxies({ includeSecrets: false });
+    const proxies = await listProxies({
+      includeSecrets: false,
+      includeManaged,
+      includeInactive,
+    });
     return Response.json({ items: proxies, total: proxies.length });
   } catch (error) {
     return createErrorResponseFromUnknown(error, "Failed to load proxies");
@@ -59,7 +66,10 @@ export async function POST(request: Request) {
       });
     }
 
-    const created = await createProxy(validation.data);
+    const created = await createProxy({
+      ...validation.data,
+      type: normalizeAndValidateProxyType(validation.data.type, "type"),
+    });
     return Response.json(created, { status: 201 });
   } catch (error) {
     return createErrorResponseFromUnknown(error, "Failed to create proxy");
@@ -90,7 +100,14 @@ export async function PATCH(request: Request) {
     }
 
     const { id, ...changes } = validation.data;
-    const updated = await updateProxy(id, changes);
+    const normalizedChanges =
+      changes.type === undefined
+        ? changes
+        : {
+            ...changes,
+            type: normalizeAndValidateProxyType(changes.type, "type"),
+          };
+    const updated = await updateProxy(id, normalizedChanges);
     if (!updated) {
       return createErrorResponse({ status: 404, message: "Proxy not found", type: "not_found" });
     }

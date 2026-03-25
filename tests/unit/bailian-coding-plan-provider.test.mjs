@@ -203,7 +203,7 @@ test("updateProviderConnectionSchema accepts http protocol", () => {
 // ============================================================================
 
 // Import the exported helper function from the route
-const { getStaticModelsForProvider } =
+const { getStaticModelsForProvider, getGeminiCliModelsFromQuotaResponse } =
   await import("../../src/app/api/providers/[id]/models/route.ts");
 
 test("getStaticModelsForProvider returns 8 models for bailian-coding-plan", () => {
@@ -278,6 +278,46 @@ test("getStaticModelsForProvider returns models for other static providers", () 
     assert.ok(models, `Should return models for static provider: ${provider}`);
     assert.ok(models.length > 0, `Should return non-empty models for: ${provider}`);
   }
+});
+
+test("getStaticModelsForProvider returns registry-backed fallback models for gemini-cli", () => {
+  const models = getStaticModelsForProvider("gemini-cli");
+
+  assert.ok(models, "Should return static fallback models for gemini-cli");
+  assert.ok(models.length > 0, "Gemini CLI fallback models should not be empty");
+  assert.ok(
+    models.some((model) => model.id === "gemini-2.5-pro"),
+    "Gemini CLI fallback should include gemini-2.5-pro"
+  );
+});
+
+test("getGeminiCliModelsFromQuotaResponse maps and deduplicates bucket model IDs", () => {
+  const models = getGeminiCliModelsFromQuotaResponse({
+    buckets: [
+      { modelId: "gemini-2.5-pro", tokenType: "REQUESTS" },
+      { modelId: "gemini-2.5-pro", tokenType: "TOKENS" },
+      { modelId: "gemini-3-pro-preview", tokenType: "REQUESTS" },
+      { modelId: "gemini-3-flash-preview", tokenType: "REQUESTS" },
+      { modelId: "" },
+      {},
+    ],
+  });
+
+  assert.deepEqual(
+    models.map((model) => model.id),
+    ["gemini-2.5-pro", "gemini-3-pro-preview", "gemini-3-flash-preview"],
+    "Should keep unique model IDs in quota order"
+  );
+  assert.equal(
+    models.find((model) => model.id === "gemini-2.5-pro")?.name,
+    "Gemini 2.5 Pro",
+    "Known registry models should keep friendly names"
+  );
+  assert.equal(
+    models.find((model) => model.id === "gemini-3-pro-preview")?.name,
+    "gemini-3-pro-preview",
+    "Unknown preview models should fall back to the raw model ID"
+  );
 });
 
 test("getStaticModelsForProvider returns models matching registry for bailian-coding-plan", async () => {

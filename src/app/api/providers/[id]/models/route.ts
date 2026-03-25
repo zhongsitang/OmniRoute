@@ -1,9 +1,12 @@
 import { NextResponse } from "next/server";
 import { getProviderConnectionById } from "@/models";
+import { resolveProxyForProviderOperation } from "@/lib/localDb";
+import { getRegistryEntry } from "@omniroute/open-sse/config/providerRegistry.ts";
 import {
   isOpenAICompatibleProvider,
   isAnthropicCompatibleProvider,
 } from "@/shared/constants/providers";
+import { runWithProxyContext } from "@omniroute/open-sse/utils/proxyFetch.ts";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -28,6 +31,8 @@ type ProviderModelsConfigEntry = {
   parseResponse: (data: any) => any;
 };
 
+type ProviderModelListItem = { id: string; name: string };
+
 const KIMI_CODING_MODELS_CONFIG: ProviderModelsConfigEntry = {
   url: "https://api.kimi.com/coding/v1/models",
   method: "GET",
@@ -36,8 +41,142 @@ const KIMI_CODING_MODELS_CONFIG: ProviderModelsConfigEntry = {
   parseResponse: (data) => data.data || data.models || [],
 };
 
+const GEMINI_CLI_CODE_ASSIST_BASE_URL = "https://cloudcode-pa.googleapis.com/v1internal";
+const GEMINI_CLI_USER_AGENT = "gemini-cli/0.1.20";
+const GEMINI_CLI_API_CLIENT = "google-cloud-sdk vscode_cloudshelleditor/0.1";
+const GEMINI_CLI_CLIENT_METADATA = {
+  ideType: "IDE_UNSPECIFIED",
+  platform: "PLATFORM_UNSPECIFIED",
+  pluginType: "GEMINI",
+} as const;
+
+function getRegistryModelsForProvider(provider: string): ProviderModelListItem[] {
+  const entry = getRegistryEntry(provider);
+  return Array.isArray(entry?.models)
+    ? entry.models
+        .map((model) => {
+          const id = typeof model?.id === "string" ? model.id.trim() : "";
+          const name = typeof model?.name === "string" ? model.name.trim() : id;
+          return id ? { id, name: name || id } : null;
+        })
+        .filter((model): model is ProviderModelListItem => model !== null)
+    : [];
+}
+
+function getModelNameFromRegistry(provider: string, modelId: string): string {
+  const match = getRegistryModelsForProvider(provider).find((model) => model.id === modelId);
+  return match?.name || modelId;
+}
+
+function extractGeminiCliProjectId(connection: unknown, loadCodeAssistData?: unknown): string | null {
+  const connectionRecord = asRecord(connection);
+  const providerSpecificData = asRecord(connectionRecord.providerSpecificData);
+  const connectionProjectId = connectionRecord.projectId;
+  if (typeof connectionProjectId === "string" && connectionProjectId.trim().length > 0) {
+    return connectionProjectId.trim();
+  }
+
+  const providerProjectId = providerSpecificData.projectId;
+  if (typeof providerProjectId === "string" && providerProjectId.trim().length > 0) {
+    return providerProjectId.trim();
+  }
+
+  const loadCodeAssistRecord = asRecord(loadCodeAssistData);
+  const project = loadCodeAssistRecord.cloudaicompanionProject;
+  if (typeof project === "string" && project.trim().length > 0) {
+    return project.trim();
+  }
+
+  const projectRecord = asRecord(project);
+  const projectId = projectRecord.id;
+  return typeof projectId === "string" && projectId.trim().length > 0 ? projectId.trim() : null;
+}
+
+export function getGeminiCliModelsFromQuotaResponse(
+  quotaData: unknown
+): Array<ProviderModelListItem> {
+  const quotaRecord = asRecord(quotaData);
+  const buckets = Array.isArray(quotaRecord.buckets) ? quotaRecord.buckets : [];
+  const seen = new Set<string>();
+  const models: ProviderModelListItem[] = [];
+
+  for (const bucket of buckets) {
+    const bucketRecord = asRecord(bucket);
+    const modelId = typeof bucketRecord.modelId === "string" ? bucketRecord.modelId.trim() : "";
+    if (!modelId || seen.has(modelId)) continue;
+    seen.add(modelId);
+    models.push({
+      id: modelId,
+      name: getModelNameFromRegistry("gemini-cli", modelId),
+    });
+  }
+
+  return models;
+}
+
+async function fetchGeminiCliDynamicModels(
+  connection: unknown,
+  accessToken: string,
+  withProviderProxy: <T>(fn: () => Promise<T>) => Promise<T>
+): Promise<Array<ProviderModelListItem>> {
+  if (!accessToken) return [];
+
+  let projectId = extractGeminiCliProjectId(connection);
+  if (!projectId) {
+    const loadCodeAssistResponse = await withProviderProxy(() =>
+      fetch(`${GEMINI_CLI_CODE_ASSIST_BASE_URL}:loadCodeAssist`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+          "User-Agent": GEMINI_CLI_USER_AGENT,
+          "X-Goog-Api-Client": GEMINI_CLI_API_CLIENT,
+          "Client-Metadata": JSON.stringify(GEMINI_CLI_CLIENT_METADATA),
+        },
+        body: JSON.stringify({
+          metadata: GEMINI_CLI_CLIENT_METADATA,
+        }),
+      })
+    );
+
+    if (!loadCodeAssistResponse.ok) {
+      const errorText = await loadCodeAssistResponse.text();
+      console.log("Gemini CLI loadCodeAssist failed:", errorText);
+      return [];
+    }
+
+    const loadCodeAssistData = await loadCodeAssistResponse.json();
+    projectId = extractGeminiCliProjectId(connection, loadCodeAssistData);
+    if (!projectId) {
+      console.log("Gemini CLI loadCodeAssist returned no project; falling back to static models");
+      return [];
+    }
+  }
+
+  const quotaResponse = await withProviderProxy(() =>
+    fetch(`${GEMINI_CLI_CODE_ASSIST_BASE_URL}:retrieveUserQuota`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+        "User-Agent": GEMINI_CLI_USER_AGENT,
+      },
+      body: JSON.stringify({ project: projectId }),
+    })
+  );
+
+  if (!quotaResponse.ok) {
+    const errorText = await quotaResponse.text();
+    console.log("Gemini CLI retrieveUserQuota failed:", errorText);
+    return [];
+  }
+
+  const quotaData = await quotaResponse.json();
+  return getGeminiCliModelsFromQuotaResponse(quotaData);
+}
+
 // Providers that return hardcoded models (no remote /models API)
-const STATIC_MODEL_PROVIDERS: Record<string, () => Array<{ id: string; name: string }>> = {
+const STATIC_MODEL_PROVIDERS: Record<string, () => Array<ProviderModelListItem>> = {
   deepgram: () => [
     { id: "nova-3", name: "Nova 3 (Transcription)" },
     { id: "nova-2", name: "Nova 2 (Transcription)" },
@@ -81,7 +220,12 @@ const STATIC_MODEL_PROVIDERS: Record<string, () => Array<{ id: string; name: str
  */
 export function getStaticModelsForProvider(
   provider: string
-): Array<{ id: string; name: string }> | undefined {
+): Array<ProviderModelListItem> | undefined {
+  if (provider === "gemini-cli") {
+    const registryModels = getRegistryModelsForProvider(provider);
+    if (registryModels.length > 0) return registryModels;
+  }
+
   const staticModelsFn = STATIC_MODEL_PROVIDERS[provider];
   return staticModelsFn ? staticModelsFn() : undefined;
 }
@@ -103,19 +247,6 @@ const PROVIDER_MODELS_CONFIG: Record<string, ProviderModelsConfigEntry> = {
     method: "GET",
     headers: { "Content-Type": "application/json" },
     authQuery: "key", // Use query param for API key
-    parseResponse: (data) =>
-      (data.models || []).map((m) => ({
-        ...m,
-        id: (m.name || m.id || "").replace(/^models\//, ""),
-        name: m.displayName || (m.name || "").replace(/^models\//, ""),
-      })),
-  },
-  "gemini-cli": {
-    url: "https://generativelanguage.googleapis.com/v1beta/models",
-    method: "GET",
-    headers: { "Content-Type": "application/json" },
-    authHeader: "Authorization",
-    authPrefix: "Bearer ",
     parseResponse: (data) =>
       (data.models || []).map((m) => ({
         ...m,
@@ -326,6 +457,12 @@ export async function GET(request, { params }) {
     const connectionId = typeof connection.id === "string" ? connection.id : id;
     const apiKey = typeof connection.apiKey === "string" ? connection.apiKey : "";
     const accessToken = typeof connection.accessToken === "string" ? connection.accessToken : "";
+    const proxyInfo = await resolveProxyForProviderOperation({
+      provider,
+      connectionId,
+    });
+    const withProviderProxy = <T>(fn: () => Promise<T>) =>
+      runWithProxyContext(proxyInfo?.proxy || null, fn);
 
     if (isOpenAICompatibleProvider(provider)) {
       const baseUrl = getProviderBaseUrl(connection.providerSpecificData);
@@ -345,13 +482,15 @@ export async function GET(request, { params }) {
         modelsUrl = `${modelsUrl}/models`;
       }
 
-      const response = await fetch(modelsUrl, {
-        method: "GET",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-        },
-      });
+      const response = await withProviderProxy(() =>
+        fetch(modelsUrl, {
+          method: "GET",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${apiKey}`,
+          },
+        })
+      );
 
       if (!response.ok) {
         const errorText = await response.text();
@@ -387,15 +526,17 @@ export async function GET(request, { params }) {
       }
 
       const url = `${baseUrl}/models`;
-      const response = await fetch(url, {
-        method: "GET",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": apiKey,
-          "anthropic-version": "2023-06-01",
-          Authorization: `Bearer ${apiKey}`,
-        },
-      });
+      const response = await withProviderProxy(() =>
+        fetch(url, {
+          method: "GET",
+          headers: {
+            "Content-Type": "application/json",
+            "x-api-key": apiKey,
+            "anthropic-version": "2023-06-01",
+            Authorization: `Bearer ${apiKey}`,
+          },
+        })
+      );
 
       if (!response.ok) {
         const errorText = await response.text();
@@ -416,16 +557,28 @@ export async function GET(request, { params }) {
       });
     }
 
+    if (provider === "gemini-cli") {
+      const geminiCliModels = await fetchGeminiCliDynamicModels(
+        connection,
+        accessToken,
+        withProviderProxy
+      );
+      if (geminiCliModels.length > 0) {
+        return NextResponse.json({
+          provider,
+          connectionId,
+          models: geminiCliModels,
+        });
+      }
+    }
+
     // Static model providers (no remote /models API)
-    const staticModelsFn =
-      provider in STATIC_MODEL_PROVIDERS
-        ? STATIC_MODEL_PROVIDERS[provider as keyof typeof STATIC_MODEL_PROVIDERS]
-        : undefined;
-    if (staticModelsFn) {
+    const staticModels = getStaticModelsForProvider(provider);
+    if (staticModels) {
       return NextResponse.json({
         provider,
         connectionId,
-        models: staticModelsFn(),
+        models: staticModels,
       });
     }
 
@@ -474,7 +627,7 @@ export async function GET(request, { params }) {
       fetchOptions.body = JSON.stringify(config.body);
     }
 
-    const response = await fetch(url, fetchOptions);
+    const response = await withProviderProxy(() => fetch(url, fetchOptions));
 
     if (!response.ok) {
       const errorText = await response.text();

@@ -1,5 +1,12 @@
 # omniroute — Agent Guidelines
 
+## Local Workspace Context
+
+If `.codex/local-context.md` exists, read it before handling deployment,
+production debugging, server access, database inspection, or page verification
+tasks. Treat it as clone-specific operational context. It is intentionally
+local-only and may be absent in other checkouts.
+
 ## Project
 
 Unified AI proxy/router — route any LLM through one endpoint. Multi-provider support
@@ -22,6 +29,15 @@ with **MCP Server** (16 tools for agent control) and **A2A v0.3 Protocol** (Agen
 - Reuse the machine's existing `node_modules`, npm cache, and user app data. On Windows, default runtime data is `%APPDATA%\omniroute`.
 - Default dev URL is `http://localhost:20128`.
 - Write dev logs to `logs/dev-server.log` and the active PID to `logs/dev-server.pid` so later sessions can reuse or restart the same server quickly.
+
+## Command Notes
+
+- Quote literal paths containing `[` or `]` (for example `src/app/api/oauth/[provider]/[action]/route.ts`) and prefer PowerShell `-LiteralPath` when reading them locally.
+- From Windows PowerShell to remote `bash`, prefer short one-line `ssh '...'` commands. Multiline stdin/heredoc payloads often pick up CRLF and break with errors like `unexpected EOF`, `-print\r`, or `expecting done`.
+- For remote JSON bodies, avoid nested quote soup. Prefer writing a temp file or piping a minimal stdin payload instead of embedding large JSON directly in a shell one-liner.
+- In this repo, Node runs in ESM mode. Temp helper scripts using `require()` must use `.cjs`, or switch to `import`.
+- `Start-Process` cannot use the same file for `-RedirectStandardOutput` and `-RedirectStandardError`; use two files.
+- A second `next dev` in the same worktree will fail on `.next/dev/lock`; reuse the existing dev server unless you also isolate `distDir`/worktree.
 
 ## Architecture
 

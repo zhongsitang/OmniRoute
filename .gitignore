@@ -57,6 +57,7 @@ logs/*
 antigravity-manager-analysis/
 .sisyphus/
 .plans/
+.codex/local-context.md
 
 # docs (allow specific tracked files)
 docs/*

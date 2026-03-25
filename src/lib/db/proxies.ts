@@ -93,6 +93,54 @@ function normalizeScope(scope: string): ProxyScope {
   return "global";
 }
 
+function getLegacyProxyConfigMapKey(scope: ProxyScope): "providers" | "combos" | "keys" | null {
+  if (scope === "provider") return "providers";
+  if (scope === "combo") return "combos";
+  if (scope === "account") return "keys";
+  return null;
+}
+
+function clearLegacyProxyConfigForScope(scope: ProxyScope, scopeId: string | null) {
+  const db = getDbInstance();
+
+  if (scope === "global") {
+    db.prepare("DELETE FROM key_value WHERE namespace = 'proxyConfig' AND key = 'global'").run();
+    return;
+  }
+
+  const mapKey = getLegacyProxyConfigMapKey(scope);
+  if (!mapKey || !scopeId) return;
+
+  const row = db
+    .prepare("SELECT value FROM key_value WHERE namespace = 'proxyConfig' AND key = ?")
+    .get(mapKey);
+  const record = toRecord(row);
+  const rawValue = typeof record.value === "string" ? record.value : null;
+  if (!rawValue) return;
+
+  let proxyMap: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(rawValue);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      proxyMap = parsed as Record<string, unknown>;
+    }
+  } catch {
+    proxyMap = {};
+  }
+
+  if (!Object.prototype.hasOwnProperty.call(proxyMap, scopeId)) return;
+  delete proxyMap[scopeId];
+
+  if (Object.keys(proxyMap).length === 0) {
+    db.prepare("DELETE FROM key_value WHERE namespace = 'proxyConfig' AND key = ?").run(mapKey);
+    return;
+  }
+
+  db.prepare(
+    "INSERT OR REPLACE INTO key_value (namespace, key, value) VALUES ('proxyConfig', ?, ?)"
+  ).run(mapKey, JSON.stringify(proxyMap));
+}
+
 function coerceProxyPayload(value: unknown, fallbackName: string): ProxyPayload | null {
   if (!value) return null;
 
@@ -316,6 +364,8 @@ export async function assignProxyToScope(
      DO UPDATE SET proxy_id = excluded.proxy_id, updated_at = excluded.updated_at`
   ).run(proxyId, normalizedScope, normalizedScopeId, now, now);
 
+  clearLegacyProxyConfigForScope(normalizedScope, scopeId);
+
   backupDbFile("pre-write");
 
   const row = db
@@ -324,6 +374,33 @@ export async function assignProxyToScope(
     )
     .get(normalizedScope, normalizedScopeId);
   return row ? mapAssignmentRow(row) : null;
+}
+
+export async function resolveProxyForScopeFromRegistry(scope: string, scopeId: string | null) {
+  const normalizedScope = normalizeScope(scope);
+  const normalizedScopeId = normalizedScope === "global" ? "__global__" : scopeId;
+  const db = getDbInstance();
+  const row = db
+    .prepare(
+      "SELECT p.id, p.type, p.host, p.port, p.username, p.password FROM proxy_assignments a JOIN proxy_registry p ON p.id = a.proxy_id WHERE a.scope = ? AND a.scope_id IS ? LIMIT 1"
+    )
+    .get(normalizedScope, normalizedScopeId);
+
+  if (!row) return null;
+
+  const record = toRecord(row);
+  return {
+    proxy: {
+      type: record.type,
+      host: record.host,
+      port: record.port,
+      username: record.username,
+      password: record.password,
+    },
+    level: normalizedScope,
+    levelId: normalizedScope === "global" ? null : scopeId,
+    source: "registry",
+  };
 }
 
 export async function deleteProxyById(id: string, options?: { force?: boolean }) {
@@ -353,76 +430,25 @@ export async function deleteProxyById(id: string, options?: { force?: boolean })
 }
 
 export async function resolveProxyForConnectionFromRegistry(connectionId: string) {
-  const db = getDbInstance();
+  const accountResolved = await resolveProxyForScopeFromRegistry("account", connectionId);
+  if (accountResolved?.proxy) return accountResolved;
 
-  const accountAssignment = db
-    .prepare(
-      "SELECT p.id, p.type, p.host, p.port, p.username, p.password FROM proxy_assignments a JOIN proxy_registry p ON p.id = a.proxy_id WHERE a.scope = 'account' AND a.scope_id = ? LIMIT 1"
-    )
-    .get(connectionId);
-  if (accountAssignment) {
-    const record = toRecord(accountAssignment);
-    return {
-      proxy: {
-        type: record.type,
-        host: record.host,
-        port: record.port,
-        username: record.username,
-        password: record.password,
-      },
-      level: "account",
-      levelId: connectionId,
-      source: "registry",
-    };
-  }
+  const db = getDbInstance();
 
   const connection = db
     .prepare("SELECT provider FROM provider_connections WHERE id = ?")
     .get(connectionId) as { provider?: string } | undefined;
 
   if (connection?.provider) {
-    const providerAssignment = db
-      .prepare(
-        "SELECT p.id, p.type, p.host, p.port, p.username, p.password FROM proxy_assignments a JOIN proxy_registry p ON p.id = a.proxy_id WHERE a.scope = 'provider' AND a.scope_id = ? LIMIT 1"
-      )
-      .get(connection.provider);
-    if (providerAssignment) {
-      const record = toRecord(providerAssignment);
-      return {
-        proxy: {
-          type: record.type,
-          host: record.host,
-          port: record.port,
-          username: record.username,
-          password: record.password,
-        },
-        level: "provider",
-        levelId: connection.provider,
-        source: "registry",
-      };
-    }
+    const providerResolved = await resolveProxyForScopeFromRegistry(
+      "provider",
+      connection.provider
+    );
+    if (providerResolved?.proxy) return providerResolved;
   }
 
-  const globalAssignment = db
-    .prepare(
-      "SELECT p.id, p.type, p.host, p.port, p.username, p.password FROM proxy_assignments a JOIN proxy_registry p ON p.id = a.proxy_id WHERE a.scope = 'global' LIMIT 1"
-    )
-    .get();
-  if (globalAssignment) {
-    const record = toRecord(globalAssignment);
-    return {
-      proxy: {
-        type: record.type,
-        host: record.host,
-        port: record.port,
-        username: record.username,
-        password: record.password,
-      },
-      level: "global",
-      levelId: null,
-      source: "registry",
-    };
-  }
+  const globalResolved = await resolveProxyForScopeFromRegistry("global", null);
+  if (globalResolved?.proxy) return globalResolved;
 
   return null;
 }

@@ -6,7 +6,12 @@ import { getDbInstance } from "./core";
 import { backupDbFile } from "./backup";
 import { PROVIDER_ID_TO_ALIAS } from "@omniroute/open-sse/config/providerModels.ts";
 import { invalidateDbCache } from "./readCache";
-import { resolveProxyForConnectionFromRegistry } from "./proxies";
+import {
+  getProxyAssignments,
+  listProxies,
+  resolveProxyForConnectionFromRegistry,
+  resolveProxyForScopeFromRegistry,
+} from "./proxies";
 
 type JsonRecord = Record<string, unknown>;
 type PricingModels = Record<string, JsonRecord>;
@@ -22,6 +27,8 @@ interface ProxyConfig {
   [key: string]: unknown;
 }
 
+type RegistryProxyScope = "global" | "provider" | "account" | "combo";
+
 function toRecord(value: unknown): JsonRecord {
   return value && typeof value === "object" ? (value as JsonRecord) : {};
 }
@@ -34,6 +41,64 @@ function toProxyValue(value: unknown): ProxyValue {
   if (value === null || typeof value === "string") return value as string | null;
   if (value && typeof value === "object") return value as JsonRecord;
   return null;
+}
+
+function cloneProxyConfig(config: ProxyConfig): ProxyConfig {
+  return {
+    ...DEFAULT_PROXY_CONFIG,
+    ...config,
+    global: toProxyValue(config.global),
+    providers: { ...toProxyMap(config.providers) },
+    combos: { ...toProxyMap(config.combos) },
+    keys: { ...toProxyMap(config.keys) },
+  };
+}
+
+function proxyValueFromRegistryRecord(value: unknown): JsonRecord | null {
+  const record = toRecord(value);
+  const host = typeof record.host === "string" ? record.host : "";
+  if (!host) return null;
+
+  return {
+    type: typeof record.type === "string" ? record.type : "http",
+    host,
+    port: Number(record.port) || 0,
+    username: typeof record.username === "string" ? record.username : "",
+    password: typeof record.password === "string" ? record.password : "",
+  };
+}
+
+function normalizeRegistryProxyScope(level: string): RegistryProxyScope {
+  const value = String(level || "").toLowerCase();
+  if (value === "provider") return "provider";
+  if (value === "combo") return "combo";
+  if (value === "key" || value === "account") return "account";
+  return "global";
+}
+
+function clearRegistryProxyAssignment(level: string, id: string | null) {
+  const scope = normalizeRegistryProxyScope(level);
+  const scopeId = scope === "global" ? "__global__" : id;
+  const db = getDbInstance();
+  db.prepare("DELETE FROM proxy_assignments WHERE scope = ? AND scope_id IS ?").run(scope, scopeId);
+}
+
+function clearRegistryAssignmentsForConfig(config: Record<string, unknown>) {
+  if (config.global !== undefined) {
+    clearRegistryProxyAssignment("global", null);
+  }
+
+  for (const [mapKey, level] of [
+    ["providers", "provider"],
+    ["combos", "combo"],
+    ["keys", "key"],
+  ] as const) {
+    const value = config[mapKey];
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    for (const id of Object.keys(value)) {
+      clearRegistryProxyAssignment(level, id);
+    }
+  }
 }
 
 // ──────────────── Settings ────────────────
@@ -351,8 +416,50 @@ export async function getProxyConfig() {
   return raw;
 }
 
+export async function getEffectiveProxyConfig() {
+  const effective = cloneProxyConfig(await getProxyConfig());
+  const [assignments, proxies] = await Promise.all([
+    getProxyAssignments(),
+    listProxies({ includeSecrets: true }),
+  ]);
+
+  const proxyById = new Map(
+    proxies
+      .map((proxy) => [proxy.id, proxyValueFromRegistryRecord(proxy)] as const)
+      .filter((entry): entry is readonly [string, JsonRecord] => entry[1] !== null)
+  );
+
+  for (const assignment of assignments) {
+    const proxyValue = proxyById.get(assignment.proxyId);
+    if (!proxyValue) continue;
+
+    if (assignment.scope === "global") {
+      effective.global = proxyValue;
+      continue;
+    }
+
+    if (!assignment.scopeId) continue;
+
+    if (assignment.scope === "provider") {
+      effective.providers[assignment.scopeId] = proxyValue;
+      continue;
+    }
+
+    if (assignment.scope === "combo") {
+      effective.combos[assignment.scopeId] = proxyValue;
+      continue;
+    }
+
+    if (assignment.scope === "account") {
+      effective.keys[assignment.scopeId] = proxyValue;
+    }
+  }
+
+  return effective;
+}
+
 export async function getProxyForLevel(level: string, id?: string | null) {
-  const config = await getProxyConfig();
+  const config = await getEffectiveProxyConfig();
   if (level === "global") return config.global || null;
   const map = toProxyMap(config[level + "s"] || config[level] || {});
   return (id ? map[id] : null) || null;
@@ -361,6 +468,7 @@ export async function getProxyForLevel(level: string, id?: string | null) {
 export async function setProxyForLevel(level: string, id: string | null, proxy: ProxyValue) {
   const db = getDbInstance();
   const config = await getProxyConfig();
+  clearRegistryProxyAssignment(level, id);
 
   if (level === "global") {
     config.global = proxy || null;
@@ -382,7 +490,7 @@ export async function setProxyForLevel(level: string, id: string | null, proxy: 
   }
 
   backupDbFile("pre-write");
-  return config;
+  return getEffectiveProxyConfig();
 }
 
 export async function deleteProxyForLevel(level: string, id: string | null) {
@@ -450,6 +558,85 @@ export async function resolveProxyForConnection(connectionId: string) {
   return { proxy: null, level: "direct", levelId: null };
 }
 
+export async function resolveProxyForProviderOperation(options: {
+  provider?: string | null;
+  connectionId?: string | null;
+}) {
+  const connectionId =
+    typeof options?.connectionId === "string" && options.connectionId.trim().length > 0
+      ? options.connectionId.trim()
+      : null;
+
+  let provider =
+    typeof options?.provider === "string" && options.provider.trim().length > 0
+      ? options.provider.trim()
+      : null;
+
+  if (!provider && connectionId) {
+    const db = getDbInstance();
+    const connection = db
+      .prepare("SELECT provider FROM provider_connections WHERE id = ?")
+      .get(connectionId);
+    const connectionRecord = toRecord(connection);
+    provider =
+      typeof connectionRecord.provider === "string" && connectionRecord.provider.trim().length > 0
+        ? connectionRecord.provider
+        : null;
+  }
+
+  // Management-plane operations should not inherit combo routing.
+  // Keep them scoped to account -> provider -> global -> direct.
+  if (connectionId) {
+    const accountRegistryProxy = await resolveProxyForScopeFromRegistry("account", connectionId);
+    if (accountRegistryProxy?.proxy) {
+      return accountRegistryProxy;
+    }
+  }
+
+  if (provider) {
+    const providerRegistryProxy = await resolveProxyForScopeFromRegistry("provider", provider);
+    if (providerRegistryProxy?.proxy) {
+      return providerRegistryProxy;
+    }
+  }
+
+  const globalRegistryProxy = await resolveProxyForScopeFromRegistry("global", null);
+  if (globalRegistryProxy?.proxy) {
+    return globalRegistryProxy;
+  }
+
+  const config = await getProxyConfig();
+
+  if (connectionId && config.keys?.[connectionId]) {
+    return {
+      proxy: config.keys[connectionId],
+      level: "account",
+      levelId: connectionId,
+      source: "legacy",
+    };
+  }
+
+  if (provider && config.providers?.[provider]) {
+    return {
+      proxy: config.providers[provider],
+      level: "provider",
+      levelId: provider,
+      source: "legacy",
+    };
+  }
+
+  if (config.global) {
+    return {
+      proxy: config.global,
+      level: "global",
+      levelId: null,
+      source: "legacy",
+    };
+  }
+
+  return { proxy: null, level: "direct", levelId: null, source: "direct" };
+}
+
 export async function setProxyConfig(config: Record<string, unknown>) {
   if (config.level !== undefined) {
     const level = typeof config.level === "string" ? config.level : "global";
@@ -465,6 +652,7 @@ export async function setProxyConfig(config: Record<string, unknown>) {
   );
 
   const tx = db.transaction(() => {
+    clearRegistryAssignmentsForConfig(config);
     if (config.global !== undefined) {
       current.global = toProxyValue(config.global);
       insert.run("global", JSON.stringify(current.global));
@@ -483,5 +671,5 @@ export async function setProxyConfig(config: Record<string, unknown>) {
   tx();
 
   backupDbFile("pre-write");
-  return current;
+  return getEffectiveProxyConfig();
 }

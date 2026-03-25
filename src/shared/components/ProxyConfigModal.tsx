@@ -200,28 +200,7 @@ export default function ProxyConfigModal({
             proxyId: selectedProxyId,
           }),
         });
-
-        if (res.ok) {
-          const clearParams = new URLSearchParams({ level });
-          if (levelId) clearParams.set("id", levelId);
-          await fetch(`/api/settings/proxy?${clearParams.toString()}`, { method: "DELETE" });
-        }
       } else {
-        const clearAssignmentRes = await fetch("/api/settings/proxies/assignments", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            scope,
-            scopeId: level === "global" ? null : levelId,
-            proxyId: null,
-          }),
-        });
-        const clearAssignmentPayload = await clearAssignmentRes.json().catch(() => ({}));
-        if (!clearAssignmentRes.ok) {
-          setFormError(clearAssignmentPayload?.error?.message || "Failed to clear saved proxy");
-          return;
-        }
-
         const proxy = {
           type: proxyType,
           host: host.trim(),
@@ -257,17 +236,6 @@ export default function ProxyConfigModal({
     setFormError(null);
     setSaving(true);
     try {
-      const scope = level === "key" ? "account" : level;
-      await fetch("/api/settings/proxies/assignments", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          scope,
-          scopeId: level === "global" ? null : levelId,
-          proxyId: null,
-        }),
-      });
-
       const params = new URLSearchParams({ level });
       if (levelId) params.set("id", levelId);
       const res = await fetch(`/api/settings/proxy?${params}`, { method: "DELETE" });

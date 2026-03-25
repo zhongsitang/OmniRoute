@@ -1,5 +1,5 @@
 import {
-  getProxyConfig,
+  getEffectiveProxyConfig,
   setProxyConfig,
   getProxyForLevel,
   deleteProxyForLevel,
@@ -133,7 +133,7 @@ export async function GET(request: Request) {
     }
 
     // Get full config
-    const config = await getProxyConfig();
+    const config = await getEffectiveProxyConfig();
     return Response.json(config);
   } catch (error) {
     return createErrorResponseFromUnknown(error, "Failed to load proxy config");

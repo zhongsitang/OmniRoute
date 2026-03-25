@@ -89,10 +89,12 @@ export {
 
   // Proxy Config
   getProxyConfig,
+  getEffectiveProxyConfig,
   getProxyForLevel,
   setProxyForLevel,
   deleteProxyForLevel,
   resolveProxyForConnection,
+  resolveProxyForProviderOperation,
   setProxyConfig,
 } from "./db/settings";
 
@@ -106,6 +108,7 @@ export {
   getProxyAssignments,
   getProxyWhereUsed,
   assignProxyToScope,
+  resolveProxyForScopeFromRegistry,
   resolveProxyForConnectionFromRegistry,
   migrateLegacyProxyConfigToRegistry,
   getProxyHealthStats,

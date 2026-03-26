@@ -248,6 +248,7 @@
     "scheduleDays": "日期",
     "scheduleTimezone": "时区",
     "scheduleTimezoneHint": "使用 IANA 时区名称，例如 America/New_York、Europe/Berlin",
+    "useServerTimezone": "使用服务器时区",
     "scheduleActive": "时段限制",
     "disabled": "已禁用",
     "daySun": "周日",

@@ -8,7 +8,7 @@ interface SelectOption {
   label: string;
 }
 
-interface SelectProps extends Omit<React.SelectHTMLAttributes<HTMLSelectElement>, 'size'> {
+interface SelectProps extends Omit<React.SelectHTMLAttributes<HTMLSelectElement>, "size"> {
   label?: React.ReactNode;
   options?: SelectOption[];
   placeholder?: string;
@@ -37,6 +37,7 @@ export default function Select({
   const errorId = error ? `${selectId}-error` : undefined;
   const hintId = hint && !error ? `${selectId}-hint` : undefined;
   const describedBy = [errorId, hintId].filter(Boolean).join(" ") || undefined;
+  const hasEmptyOption = options.some((option) => option.value === "");
 
   return (
     <div className={cn("flex flex-col gap-1.5", className)}>
@@ -71,9 +72,11 @@ export default function Select({
           )}
           {...props}
         >
-          <option value="" disabled className="bg-surface text-text-muted">
-            {placeholder}
-          </option>
+          {!hasEmptyOption && (
+            <option value="" disabled className="bg-surface text-text-muted">
+              {placeholder}
+            </option>
+          )}
           {options.map((option) => (
             <option key={option.value} value={option.value} className="bg-surface text-text-main">
               {option.label}

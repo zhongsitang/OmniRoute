@@ -6,7 +6,6 @@ import {
   toRecord,
   type JsonRecord,
 } from "./usageShared.ts";
-import { resolveSystemTimeZone } from "@/lib/systemTimeZone";
 import { getNextDailyResetAt } from "@/shared/utils/timezone";
 
 const OPENAI_COMPATIBLE_PREFIX = "openai-compatible-";
@@ -114,10 +113,10 @@ function findNestedRecord(
 
 function inferLocalResetTime(
   period: CompatibleBalancePeriod | null,
-  resolvedTimeZone: string
+  preferredTimeZone: unknown
 ): string | null {
   if (period !== "daily") return null;
-  return getNextDailyResetAt(resolvedTimeZone);
+  return getNextDailyResetAt(preferredTimeZone);
 }
 
 function pickCompatiblePeriodWindow(subscription: JsonRecord): {
@@ -167,7 +166,7 @@ function getCompatiblePeriodResetAt(
 
 function parseCompatibleBalanceResponse(
   data: unknown,
-  resolvedTimeZone: string
+  preferredTimeZone: unknown
 ): CompatibleUsageResponse {
   const source = toRecord(data);
   const directSubscription = toRecord(source.subscription);
@@ -231,7 +230,7 @@ function parseCompatibleBalanceResponse(
         expiresAt,
         resetAt:
           getCompatiblePeriodResetAt(source, subscription, periodWindow.period) ||
-          inferLocalResetTime(periodWindow.period, resolvedTimeZone),
+          inferLocalResetTime(periodWindow.period, preferredTimeZone),
       },
     };
   }
@@ -307,8 +306,10 @@ export async function getCompatibleUsage(
       throw new Error(`Compatible provider usage API error (${response.status}): ${errorText}`);
     }
 
-    const resolvedTimeZone = await resolveSystemTimeZone(providerSpecificData.resetTimezone);
-    return parseCompatibleBalanceResponse(await response.json(), resolvedTimeZone);
+    return parseCompatibleBalanceResponse(
+      await response.json(),
+      providerSpecificData.resetTimezone
+    );
   } catch (error) {
     throw new Error(`Failed to fetch compatible provider usage: ${(error as Error).message}`);
   }

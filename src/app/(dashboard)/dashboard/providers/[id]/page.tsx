@@ -31,12 +31,12 @@ import {
 } from "@/shared/constants/providers";
 import { getModelsByProviderId } from "@/shared/constants/models";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
-import { useSystemTimeZone } from "@/shared/hooks/useSystemTimeZone";
 import { getProviderDisplayName } from "@/lib/display/names";
 import {
   MODEL_COMPAT_PROTOCOL_KEYS,
   type ModelCompatProtocolKey,
 } from "@/shared/constants/modelCompat";
+import { buildTimeZoneOptions } from "@/shared/utils/timezone";
 
 type CompatByProtocolMap = Partial<
   Record<
@@ -3282,12 +3282,10 @@ function ConnectionRow({
     geminiLastError.includes("revoked") ||
     geminiLastError.includes("access denied") ||
     geminiLastError.includes("unauthorized");
-  const hasGeminiCliAuthIssue =
-    isGeminiCliConnection && hasGeminiCliAuthSignal;
-  const showExpiredTokenIndicator =
-    isGeminiCliConnection
-      ? hasGeminiCliAuthIssue || (tokenMinsLeft !== null && tokenMinsLeft < 0)
-      : tokenMinsLeft !== null && tokenMinsLeft < 0;
+  const hasGeminiCliAuthIssue = isGeminiCliConnection && hasGeminiCliAuthSignal;
+  const showExpiredTokenIndicator = isGeminiCliConnection
+    ? hasGeminiCliAuthIssue || (tokenMinsLeft !== null && tokenMinsLeft < 0)
+    : tokenMinsLeft !== null && tokenMinsLeft < 0;
   const rateLimitEnabled = !!connection.rateLimitProtection;
   const codexPolicy =
     connection.providerSpecificData &&
@@ -3333,26 +3331,26 @@ function ConnectionRow({
             </Badge>
             {/* T12: Token expiry status indicator (state-driven, no Date.now in render) */}
             {showExpiredTokenIndicator ? (
-                <span
-                  className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-xs font-medium bg-red-500/15 text-red-500"
-                  title={
-                    tokenMinsLeft < 0
-                      ? `Token expired: ${effectiveTokenExpiryAt}`
-                      : `Connection auth issue: ${connection.lastErrorType || inferredErrorType || connection.testStatus || "unknown"}`
-                  }
-                >
-                  <span className="material-symbols-outlined text-[11px]">error</span>
-                  expired
-                </span>
-              ) : tokenMinsLeft !== null && tokenMinsLeft < 30 ? (
-                <span
-                  className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-xs font-medium bg-amber-500/15 text-amber-500"
-                  title={`Token expires in ${tokenMinsLeft}m`}
-                >
-                  <span className="material-symbols-outlined text-[11px]">warning</span>
-                  {`~${tokenMinsLeft}m`}
-                </span>
-              ) : null}
+              <span
+                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-xs font-medium bg-red-500/15 text-red-500"
+                title={
+                  tokenMinsLeft < 0
+                    ? `Token expired: ${effectiveTokenExpiryAt}`
+                    : `Connection auth issue: ${connection.lastErrorType || inferredErrorType || connection.testStatus || "unknown"}`
+                }
+              >
+                <span className="material-symbols-outlined text-[11px]">error</span>
+                expired
+              </span>
+            ) : tokenMinsLeft !== null && tokenMinsLeft < 30 ? (
+              <span
+                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-xs font-medium bg-amber-500/15 text-amber-500"
+                title={`Token expires in ${tokenMinsLeft}m`}
+              >
+                <span className="material-symbols-outlined text-[11px]">warning</span>
+                {`~${tokenMinsLeft}m`}
+              </span>
+            ) : null}
             {isCooldown && connection.isActive !== false && (
               <CooldownTimer until={connection.rateLimitedUntil} />
             )}
@@ -3572,7 +3570,10 @@ function AddApiKeyModal({
   const tc = useTranslations("common");
   const isBailian = provider === "bailian-coding-plan";
   const defaultBailianUrl = "https://coding-intl.dashscope.aliyuncs.com/apps/anthropic/v1";
-  const { resolvedTimeZone } = useSystemTimeZone();
+  const useServerTimeZoneLabel =
+    typeof tc.has === "function" && tc.has("useServerTimezone")
+      ? tc("useServerTimezone")
+      : "Use server timezone";
 
   const [formData, setFormData] = useState({
     name: "",
@@ -3585,6 +3586,13 @@ function AddApiKeyModal({
   const [validationResult, setValidationResult] = useState(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const timeZoneOptions = useMemo(
+    () => [
+      { value: "", label: useServerTimeZoneLabel },
+      ...buildTimeZoneOptions([formData.resetTimezone]),
+    ],
+    [formData.resetTimezone, useServerTimeZoneLabel]
+  );
 
   const handleValidate = async () => {
     setValidating(true);
@@ -3739,11 +3747,12 @@ function AddApiKeyModal({
           </p>
         )}
         {isCompatible && (
-          <Input
+          <Select
             label={tc("scheduleTimezone")}
             value={formData.resetTimezone}
             onChange={(e) => setFormData({ ...formData, resetTimezone: e.target.value })}
-            placeholder={resolvedTimeZone}
+            options={timeZoneOptions}
+            placeholder={useServerTimeZoneLabel}
             hint={tc("scheduleTimezoneHint")}
           />
         )}
@@ -3807,7 +3816,10 @@ function normalizeAndValidateHttpBaseUrl(rawValue, fallbackUrl) {
 function EditConnectionModal({ isOpen, connection, onSave, onClose }: EditConnectionModalProps) {
   const t = useTranslations("providers");
   const tc = useTranslations("common");
-  const { resolvedTimeZone } = useSystemTimeZone();
+  const useServerTimeZoneLabel =
+    typeof tc.has === "function" && tc.has("useServerTimezone")
+      ? tc("useServerTimezone")
+      : "Use server timezone";
   const [formData, setFormData] = useState({
     name: "",
     priority: 1,
@@ -3824,6 +3836,13 @@ function EditConnectionModal({ isOpen, connection, onSave, onClose }: EditConnec
   const [saveError, setSaveError] = useState<string | null>(null);
   const [extraApiKeys, setExtraApiKeys] = useState<string[]>([]);
   const [newExtraKey, setNewExtraKey] = useState("");
+  const timeZoneOptions = useMemo(
+    () => [
+      { value: "", label: useServerTimeZoneLabel },
+      ...buildTimeZoneOptions([formData.resetTimezone]),
+    ],
+    [formData.resetTimezone, useServerTimeZoneLabel]
+  );
 
   const isBailian = connection?.provider === "bailian-coding-plan";
   const defaultBailianUrl = "https://coding-intl.dashscope.aliyuncs.com/apps/anthropic/v1";
@@ -4062,11 +4081,12 @@ function EditConnectionModal({ isOpen, connection, onSave, onClose }: EditConnec
           />
         )}
         {isCompatible && !isOAuth && (
-          <Input
+          <Select
             label={tc("scheduleTimezone")}
             value={formData.resetTimezone}
             onChange={(e) => setFormData({ ...formData, resetTimezone: e.target.value })}
-            placeholder={resolvedTimeZone}
+            options={timeZoneOptions}
+            placeholder={useServerTimeZoneLabel}
             hint={tc("scheduleTimezoneHint")}
           />
         )}

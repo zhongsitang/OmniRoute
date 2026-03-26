@@ -16,8 +16,36 @@ export function getCurrentTimeZone(): string {
   }
 }
 
+export type TimeZoneOption = {
+  value: string;
+  label: string;
+};
+
+const COMMON_TIME_ZONES = [
+  "UTC",
+  "Asia/Shanghai",
+  "Asia/Tokyo",
+  "Europe/Berlin",
+  "Europe/London",
+  "America/New_York",
+  "America/Los_Angeles",
+  "Australia/Sydney",
+];
+
 export function normalizeTimeZone(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+export function getSupportedTimeZones(): string[] {
+  const intlWithSupportedValuesOf = Intl as typeof Intl & {
+    supportedValuesOf?: (key: "timeZone") => string[];
+  };
+
+  if (typeof intlWithSupportedValuesOf.supportedValuesOf === "function") {
+    return intlWithSupportedValuesOf.supportedValuesOf("timeZone");
+  }
+
+  return COMMON_TIME_ZONES;
 }
 
 export function resolvePreferredTimeZone(
@@ -108,6 +136,56 @@ function getTimeZoneOffsetMs(timeZone: string, utcMs: number): number | null {
   );
 
   return interpretedUtcMs - utcMs;
+}
+
+function formatTimeZoneOffsetLabel(timeZone: string, now = new Date()): string {
+  const offsetMs = getTimeZoneOffsetMs(timeZone, now.getTime());
+  if (offsetMs === null) return "UTC";
+
+  const totalMinutes = Math.round(offsetMs / 60000);
+  const sign = totalMinutes >= 0 ? "+" : "-";
+  const absoluteMinutes = Math.abs(totalMinutes);
+  const hours = String(Math.floor(absoluteMinutes / 60)).padStart(2, "0");
+  const minutes = String(absoluteMinutes % 60).padStart(2, "0");
+
+  return `UTC${sign}${hours}:${minutes}`;
+}
+
+export function formatTimeZoneDisplayName(value: unknown): string {
+  const timeZone = normalizeTimeZone(value);
+  if (!isValidTimeZone(timeZone)) return timeZone;
+
+  const locationLabel =
+    timeZone === "UTC"
+      ? "UTC"
+      : timeZone
+          .split("/")
+          .slice(1)
+          .map((part) => part.replace(/_/g, " "))
+          .join(" / ") || timeZone.replace(/_/g, " ");
+  const offsetLabel = formatTimeZoneOffsetLabel(timeZone);
+
+  if (locationLabel === timeZone) {
+    return `${locationLabel} (${offsetLabel})`;
+  }
+
+  return `${locationLabel} (${timeZone}, ${offsetLabel})`;
+}
+
+export function buildTimeZoneOptions(preferredTimeZones: unknown[] = []): TimeZoneOption[] {
+  const seen = new Set<string>();
+
+  return [...preferredTimeZones, ...COMMON_TIME_ZONES, ...getSupportedTimeZones()]
+    .map((value) => normalizeTimeZone(value))
+    .filter((value) => {
+      if (!value || seen.has(value) || !isValidTimeZone(value)) return false;
+      seen.add(value);
+      return true;
+    })
+    .map((value) => ({
+      value,
+      label: formatTimeZoneDisplayName(value),
+    }));
 }
 
 function getUtcForTimeZoneLocalMidnight(

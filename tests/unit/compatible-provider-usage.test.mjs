@@ -102,7 +102,7 @@ test("compatible provider daily usage normalizes into balance mode with inferred
   }
 });
 
-test("compatible provider daily reset inference falls back to global system timezone", async () => {
+test("compatible provider daily reset inference ignores legacy global timezone and follows host timezone", async () => {
   const originalFetch = globalThis.fetch;
 
   await settingsDb.updateSettings({ timeZone: "Asia/Shanghai" });
@@ -134,16 +134,17 @@ test("compatible provider daily reset inference falls back to global system time
     });
 
     assert.equal(usage.usageType, "compatible-balance");
-    assert.equal(usage.balance.resetAt, timezoneUtils.getNextDailyResetAt("Asia/Shanghai"));
+    assert.equal(
+      usage.balance.resetAt,
+      timezoneUtils.getNextDailyResetAt(timezoneUtils.getCurrentTimeZone())
+    );
   } finally {
     restoreFetch(originalFetch);
   }
 });
 
-test("compatible provider resetTimezone overrides the global system timezone", async () => {
+test("compatible provider resetTimezone overrides host timezone fallback", async () => {
   const originalFetch = globalThis.fetch;
-
-  await settingsDb.updateSettings({ timeZone: "Asia/Shanghai" });
 
   globalThis.fetch = async () =>
     new Response(
@@ -179,10 +180,8 @@ test("compatible provider resetTimezone overrides the global system timezone", a
   }
 });
 
-test("compatible provider daily reset inference falls back to host timezone when timezones are blank", async () => {
+test("compatible provider daily reset inference falls back to host timezone when resetTimezone is blank", async () => {
   const originalFetch = globalThis.fetch;
-
-  await settingsDb.updateSettings({ timeZone: "" });
 
   globalThis.fetch = async () =>
     new Response(

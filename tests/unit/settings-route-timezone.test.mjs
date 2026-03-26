@@ -35,19 +35,19 @@ test.after(async () => {
   fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
 });
 
-test("settings route exposes host and resolved system timezones", async () => {
+test("settings route hides legacy system timezone fields", async () => {
   await settingsDb.updateSettings({ timeZone: "Asia/Shanghai" });
 
   const response = await route.GET();
   const payload = await response.json();
 
   assert.equal(response.status, 200);
-  assert.equal(payload.timeZone, "Asia/Shanghai");
-  assert.ok(typeof payload.hostTimeZone === "string" && payload.hostTimeZone.length > 0);
-  assert.equal(payload.resolvedTimeZone, "Asia/Shanghai");
+  assert.equal("timeZone" in payload, false);
+  assert.equal("hostTimeZone" in payload, false);
+  assert.equal("resolvedTimeZone" in payload, false);
 });
 
-test("settings route falls back to host timezone when system timezone is blank", async () => {
+test("settings route rejects legacy timeZone updates", async () => {
   const response = await route.PATCH(
     new Request("http://localhost/api/settings", {
       method: "PATCH",
@@ -57,8 +57,6 @@ test("settings route falls back to host timezone when system timezone is blank",
   );
   const payload = await response.json();
 
-  assert.equal(response.status, 200);
-  assert.equal(payload.timeZone, "");
-  assert.ok(typeof payload.hostTimeZone === "string" && payload.hostTimeZone.length > 0);
-  assert.equal(payload.resolvedTimeZone, payload.hostTimeZone);
+  assert.equal(response.status, 400);
+  assert.match(JSON.stringify(payload), /timeZone/i);
 });

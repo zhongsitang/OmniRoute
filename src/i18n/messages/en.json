@@ -248,6 +248,7 @@
     "scheduleDays": "Days",
     "scheduleTimezone": "Timezone",
     "scheduleTimezoneHint": "Use IANA timezone names, e.g. America/New_York, Europe/Berlin",
+    "useServerTimezone": "Use server timezone",
     "scheduleActive": "Schedule",
     "disabled": "Disabled",
     "daySun": "Sun",

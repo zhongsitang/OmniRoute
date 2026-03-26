@@ -280,14 +280,13 @@ test("getStaticModelsForProvider returns models for other static providers", () 
   }
 });
 
-test("getStaticModelsForProvider returns registry-backed fallback models for gemini-cli", () => {
+test("getStaticModelsForProvider returns undefined for gemini-cli", () => {
   const models = getStaticModelsForProvider("gemini-cli");
 
-  assert.ok(models, "Should return static fallback models for gemini-cli");
-  assert.ok(models.length > 0, "Gemini CLI fallback models should not be empty");
-  assert.ok(
-    models.some((model) => model.id === "gemini-2.5-pro"),
-    "Gemini CLI fallback should include gemini-2.5-pro"
+  assert.equal(
+    models,
+    undefined,
+    "Gemini CLI should not advertise registry fallback models when dynamic discovery is unavailable"
   );
 });
 

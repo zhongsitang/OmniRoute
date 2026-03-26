@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
-import { getComboByName } from "@/lib/localDb";
+import { getComboByName, getProviderConnections } from "@/lib/localDb";
 import { testComboSchema } from "@/shared/validation/schemas";
 import { isValidationFailure, validateBody } from "@/shared/validation/helpers";
+import { getModelInfo } from "@/sse/services/model";
 
 const PROBE_TIMEOUT_MS = 20000;
 
@@ -173,6 +174,7 @@ function buildComboTestPayload({
 async function runComboTest({ request, comboName, protocol, models, onResult }) {
   const results = new Array(models.length);
   const probeControllers = new Set();
+  const geminiCliInventoryCache = new Map();
   const abortAll = () => {
     for (const controller of probeControllers) {
       controller.abort();
@@ -191,6 +193,7 @@ async function runComboTest({ request, comboName, protocol, models, onResult }) 
           index,
           model,
           probeControllers,
+          geminiCliInventoryCache,
         });
 
         if (request.signal.aborted) return;
@@ -212,7 +215,126 @@ async function runComboTest({ request, comboName, protocol, models, onResult }) 
   return { results: orderedResults, resolvedBy };
 }
 
-async function probeComboModel({ request, comboName, protocol, index, model, probeControllers }) {
+async function loadGeminiCliInventoryForConnection(request, connectionId, inventoryCache) {
+  if (inventoryCache.has(connectionId)) {
+    return await inventoryCache.get(connectionId);
+  }
+
+  const inventoryPromise = (async () => {
+    try {
+      const inventoryUrl = `${getBaseUrl(request)}/api/providers/${connectionId}/models`;
+      const response = await fetch(inventoryUrl, {
+        method: "GET",
+        headers: {
+          "X-OmniRoute-No-Cache": "true",
+          "Cache-Control": "no-cache",
+        },
+      });
+
+      let payload = null;
+      try {
+        payload = await response.json();
+      } catch {}
+
+      return response.ok
+        ? {
+            ok: true,
+            models: new Set(
+              Array.isArray(payload?.models)
+                ? payload.models
+                    .map((entry) => (typeof entry?.id === "string" ? entry.id : null))
+                    .filter(Boolean)
+                : []
+            ),
+          }
+        : {
+            ok: false,
+            statusCode: response.status,
+            error: payload?.error || "Failed to fetch Gemini CLI models",
+          };
+    } catch (error) {
+      return {
+        ok: false,
+        statusCode: 503,
+        error: error instanceof Error ? error.message : "Failed to fetch Gemini CLI models",
+      };
+    }
+  })();
+
+  inventoryCache.set(connectionId, inventoryPromise);
+  return await inventoryPromise;
+}
+
+async function precheckGeminiCliModelAvailability(request, model, inventoryCache) {
+  const modelInfo = await getModelInfo(model);
+  if (modelInfo.provider !== "gemini-cli") return null;
+
+  const activeConnections = await getProviderConnections({
+    provider: "gemini-cli",
+    isActive: true,
+  });
+  if (!Array.isArray(activeConnections) || activeConnections.length === 0) {
+    return {
+      statusCode: 503,
+      error: "No active Gemini CLI connection available for combo probe.",
+    };
+  }
+
+  let sawSuccessfulInventory = false;
+  let firstInventoryFailure = null;
+
+  for (const connection of activeConnections) {
+    const connectionId = typeof connection?.id === "string" ? connection.id : null;
+    if (!connectionId) continue;
+
+    const inventory = await loadGeminiCliInventoryForConnection(
+      request,
+      connectionId,
+      inventoryCache
+    );
+    if (!inventory.ok) {
+      if (!firstInventoryFailure) {
+        firstInventoryFailure = {
+          statusCode: inventory.statusCode,
+          error:
+            typeof inventory.error === "string"
+              ? inventory.error
+              : "Failed to discover Gemini CLI models.",
+        };
+      }
+      continue;
+    }
+
+    sawSuccessfulInventory = true;
+    if (inventory.models.has(modelInfo.model)) {
+      return null;
+    }
+  }
+
+  if (sawSuccessfulInventory) {
+    return {
+      statusCode: 404,
+      error: `Model ${modelInfo.model} is not available for the current Gemini CLI account.`,
+    };
+  }
+
+  return (
+    firstInventoryFailure || {
+      statusCode: 503,
+      error: "Failed to discover Gemini CLI models.",
+    }
+  );
+}
+
+async function probeComboModel({
+  request,
+  comboName,
+  protocol,
+  index,
+  model,
+  probeControllers,
+  geminiCliInventoryCache,
+}) {
   const startTime = Date.now();
   let timeout: ReturnType<typeof setTimeout> | null = null;
   const controller = new AbortController();
@@ -222,6 +344,22 @@ async function probeComboModel({ request, comboName, protocol, index, model, pro
   probeControllers.add(controller);
 
   try {
+    const geminiCliPrecheck = await precheckGeminiCliModelAvailability(
+      request,
+      model,
+      geminiCliInventoryCache
+    );
+    if (geminiCliPrecheck) {
+      return {
+        index,
+        model,
+        status: "error",
+        statusCode: geminiCliPrecheck.statusCode,
+        error: geminiCliPrecheck.error,
+        latencyMs: Date.now() - startTime,
+      };
+    }
+
     const probe = buildComboProbeRequest(model, protocol);
     const internalUrl = `${getBaseUrl(request)}${probe.path}`;
     timeout = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);

@@ -38,6 +38,9 @@ type ProviderModelsConfigEntry = {
 };
 
 type ProviderModelListItem = { id: string; name: string };
+type GeminiCliDynamicModelsResult =
+  | { ok: true; models: Array<ProviderModelListItem>; warning?: string }
+  | { ok: false; status: number; error: string };
 
 const KIMI_CODING_MODELS_CONFIG: ProviderModelsConfigEntry = {
   url: "https://api.kimi.com/coding/v1/models",
@@ -157,38 +160,61 @@ async function fetchGeminiCliDynamicModels(
   accessToken: string,
   withProviderProxy: <T>(fn: () => Promise<T>) => Promise<T>,
   persistProjectId?: (projectId: string) => Promise<void>
-): Promise<Array<ProviderModelListItem>> {
-  if (!accessToken) return [];
+): Promise<GeminiCliDynamicModelsResult> {
+  if (!accessToken) {
+    return {
+      ok: false,
+      status: 401,
+      error: "Gemini CLI access token is unavailable.",
+    };
+  }
 
   let projectId = extractGeminiCliProjectId(connection);
   if (!projectId) {
-    const loadCodeAssistResponse = await withProviderProxy(() =>
-      fetch(`${GEMINI_CLI_CODE_ASSIST_BASE_URL}:loadCodeAssist`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-          "User-Agent": GEMINI_CLI_USER_AGENT,
-          "X-Goog-Api-Client": GEMINI_CLI_API_CLIENT,
-          "Client-Metadata": JSON.stringify(GEMINI_CLI_CLIENT_METADATA),
-        },
-        body: JSON.stringify({
-          metadata: GEMINI_CLI_CLIENT_METADATA,
-        }),
-      })
-    );
+    let loadCodeAssistResponse: Response;
+    try {
+      loadCodeAssistResponse = await withProviderProxy(() =>
+        fetch(`${GEMINI_CLI_CODE_ASSIST_BASE_URL}:loadCodeAssist`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+            "User-Agent": GEMINI_CLI_USER_AGENT,
+            "X-Goog-Api-Client": GEMINI_CLI_API_CLIENT,
+            "Client-Metadata": JSON.stringify(GEMINI_CLI_CLIENT_METADATA),
+          },
+          body: JSON.stringify({
+            metadata: GEMINI_CLI_CLIENT_METADATA,
+          }),
+        })
+      );
+    } catch (error) {
+      return {
+        ok: false,
+        status: 502,
+        error: `Gemini CLI loadCodeAssist request failed: ${(error as Error).message}`,
+      };
+    }
 
     if (!loadCodeAssistResponse.ok) {
       const errorText = await loadCodeAssistResponse.text();
       console.log("Gemini CLI loadCodeAssist failed:", errorText);
-      return [];
+      return {
+        ok: false,
+        status: loadCodeAssistResponse.status,
+        error: `Gemini CLI loadCodeAssist failed: ${errorText || loadCodeAssistResponse.statusText || loadCodeAssistResponse.status}`,
+      };
     }
 
     const loadCodeAssistData = await loadCodeAssistResponse.json();
     projectId = extractGeminiCliProjectId(connection, loadCodeAssistData);
     if (!projectId) {
-      console.log("Gemini CLI loadCodeAssist returned no project; falling back to static models");
-      return [];
+      console.log("Gemini CLI loadCodeAssist returned no project context");
+      return {
+        ok: false,
+        status: 502,
+        error: "Gemini CLI loadCodeAssist returned no project context.",
+      };
     }
   }
 
@@ -196,26 +222,48 @@ async function fetchGeminiCliDynamicModels(
     await persistProjectId(projectId);
   }
 
-  const quotaResponse = await withProviderProxy(() =>
-    fetch(`${GEMINI_CLI_CODE_ASSIST_BASE_URL}:retrieveUserQuota`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
-        "User-Agent": GEMINI_CLI_USER_AGENT,
-      },
-      body: JSON.stringify({ project: projectId }),
-    })
-  );
+  let quotaResponse: Response;
+  try {
+    quotaResponse = await withProviderProxy(() =>
+      fetch(`${GEMINI_CLI_CODE_ASSIST_BASE_URL}:retrieveUserQuota`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+          "User-Agent": GEMINI_CLI_USER_AGENT,
+        },
+        body: JSON.stringify({ project: projectId }),
+      })
+    );
+  } catch (error) {
+    return {
+      ok: false,
+      status: 502,
+      error: `Gemini CLI retrieveUserQuota request failed: ${(error as Error).message}`,
+    };
+  }
 
   if (!quotaResponse.ok) {
     const errorText = await quotaResponse.text();
     console.log("Gemini CLI retrieveUserQuota failed:", errorText);
-    return [];
+    return {
+      ok: false,
+      status: quotaResponse.status,
+      error: `Gemini CLI retrieveUserQuota failed: ${errorText || quotaResponse.statusText || quotaResponse.status}`,
+    };
   }
 
   const quotaData = await quotaResponse.json();
-  return getGeminiCliModelsFromQuotaResponse(quotaData);
+  const models = getGeminiCliModelsFromQuotaResponse(quotaData);
+  if (models.length === 0) {
+    return {
+      ok: true,
+      models: [],
+      warning: "Gemini CLI dynamic model discovery returned no account-available models",
+    };
+  }
+
+  return { ok: true, models };
 }
 
 // Providers that return hardcoded models (no remote /models API)
@@ -264,11 +312,6 @@ const STATIC_MODEL_PROVIDERS: Record<string, () => Array<ProviderModelListItem>>
 export function getStaticModelsForProvider(
   provider: string
 ): Array<ProviderModelListItem> | undefined {
-  if (provider === "gemini-cli") {
-    const registryModels = getRegistryModelsForProvider(provider);
-    if (registryModels.length > 0) return registryModels;
-  }
-
   const staticModelsFn = STATIC_MODEL_PROVIDERS[provider];
   return staticModelsFn ? staticModelsFn() : undefined;
 }
@@ -664,13 +707,32 @@ export async function GET(request, { params }) {
         withProviderProxy,
         persistProjectId
       );
-      if (geminiCliModels.length > 0) {
+      if (!geminiCliModels.ok) {
+        return NextResponse.json(
+          {
+            error: geminiCliModels.error,
+            source: "dynamic",
+          },
+          { status: geminiCliModels.status }
+        );
+      }
+
+      if (geminiCliModels.models.length > 0) {
         return NextResponse.json({
           provider,
           connectionId,
-          models: geminiCliModels,
+          models: geminiCliModels.models,
+          source: "dynamic",
         });
       }
+
+      return NextResponse.json({
+        provider,
+        connectionId,
+        models: geminiCliModels.models,
+        source: "dynamic",
+        ...(geminiCliModels.warning ? { warning: geminiCliModels.warning } : {}),
+      });
     }
 
     // Static model providers (no remote /models API)

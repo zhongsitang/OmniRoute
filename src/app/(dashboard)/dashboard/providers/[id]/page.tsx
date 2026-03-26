@@ -72,6 +72,10 @@ function buildCompatibleAlias(prefix: string, modelId: string): string {
   return `${prefix}-${getBaseModelAlias(modelId)}`;
 }
 
+function isCompatibleAliasOwnedByProvider(alias: string, prefix: string): boolean {
+  return alias.startsWith(`${prefix}-`);
+}
+
 function getProtoSlice(
   c: CompatModelRow | undefined,
   o: CompatModelRow | undefined,
@@ -190,6 +194,7 @@ interface ModelRowProps {
 interface PassthroughModelRowProps {
   modelId: string;
   fullModel: string;
+  alias?: string;
   copied?: string;
   onCopy: (text: string, key: string) => void;
   onDeleteAlias: () => void;
@@ -214,7 +219,7 @@ interface PassthroughModelsSectionProps {
   copied?: string;
   onCopy: (text: string, key: string) => void;
   onSetAlias: (modelId: string, alias: string) => Promise<void>;
-  onDeleteAlias: (alias: string) => void;
+  onDeleteAlias: (alias: string) => Promise<boolean>;
   t: (key: string, values?: Record<string, unknown>) => string;
   effectiveModelNormalize: (alias: string) => boolean;
   effectiveModelPreserveDeveloper: (alias: string) => boolean;
@@ -245,7 +250,7 @@ interface CompatibleModelsSectionProps {
   copied?: string;
   onCopy: (text: string, key: string) => void;
   onSetAlias: (modelId: string, alias: string, providerStorageAlias?: string) => Promise<void>;
-  onDeleteAlias: (alias: string) => void;
+  onDeleteAlias: (alias: string) => Promise<boolean>;
   connections: { id?: string; isActive?: boolean }[];
   isAnthropic?: boolean;
   onImportWithProgress: (
@@ -745,11 +750,12 @@ export default function ProviderDetailPage() {
       const res = await fetch(`/api/models/alias?alias=${encodeURIComponent(alias)}`, {
         method: "DELETE",
       });
-      if (res.ok) {
-        await fetchAliases();
-      }
+      if (!res.ok) return false;
+      await fetchAliases();
+      return true;
     } catch (error) {
       console.log("Error deleting alias:", error);
+      return false;
     }
   };
 
@@ -2202,9 +2208,10 @@ function PassthroughModelsSection({
         <div className="flex flex-col gap-3">
           {allModels.map(({ modelId, fullModel, alias }) => (
             <PassthroughModelRow
-              key={fullModel as string}
+              key={alias}
               modelId={modelId}
               fullModel={fullModel}
+              alias={alias}
               copied={copied}
               onCopy={onCopy}
               onDeleteAlias={() => onDeleteAlias(alias)}
@@ -2239,6 +2246,7 @@ PassthroughModelsSection.propTypes = {
 function PassthroughModelRow({
   modelId,
   fullModel,
+  alias,
   copied,
   onCopy,
   onDeleteAlias,
@@ -2249,6 +2257,8 @@ function PassthroughModelRow({
   saveModelCompatFlags,
   compatDisabled,
 }: PassthroughModelRowProps) {
+  const copyKey = `model-${alias || modelId}`;
+
   return (
     <div className="flex flex-col gap-0 p-3 rounded-lg border border-border hover:bg-sidebar/50">
       <div className="flex items-start gap-3">
@@ -2261,13 +2271,18 @@ function PassthroughModelRow({
             <code className="text-xs text-text-muted font-mono bg-sidebar px-1.5 py-0.5 rounded">
               {fullModel}
             </code>
+            {alias && alias !== fullModel && (
+              <code className="text-xs text-text-muted font-mono bg-sidebar px-1.5 py-0.5 rounded">
+                {alias}
+              </code>
+            )}
             <button
-              onClick={() => onCopy(fullModel, `model-${modelId}`)}
+              onClick={() => onCopy(fullModel, copyKey)}
               className="p-0.5 hover:bg-sidebar rounded text-text-muted hover:text-primary"
               title={t("copyModel")}
             >
               <span className="material-symbols-outlined text-sm">
-                {copied === `model-${modelId}` ? "check" : "content_copy"}
+                {copied === copyKey ? "check" : "content_copy"}
               </span>
             </button>
           </div>
@@ -2299,6 +2314,7 @@ function PassthroughModelRow({
 PassthroughModelRow.propTypes = {
   modelId: PropTypes.string.isRequired,
   fullModel: PropTypes.string.isRequired,
+  alias: PropTypes.string,
   copied: PropTypes.string,
   onCopy: PropTypes.func.isRequired,
   onDeleteAlias: PropTypes.func.isRequired,
@@ -2792,9 +2808,13 @@ function CompatibleModelsSection({
   const [importing, setImporting] = useState(false);
   const notify = useNotificationStore();
 
-  const providerAliases = Object.entries(modelAliases).filter(([, model]: [string, any]) =>
-    (model as string).startsWith(`${providerStorageAlias}/`)
-  );
+  const providerAliases = Object.entries(modelAliases).filter(([alias, model]: [string, any]) => {
+    if (typeof model !== "string") return false;
+    return (
+      isCompatibleAliasOwnedByProvider(alias, providerAliasPrefix) &&
+      model.startsWith(`${providerStorageAlias}/`)
+    );
+  });
 
   const allModels = providerAliases.map(([alias, fullModel]: [string, any]) => ({
     modelId: (fullModel as string).replace(`${providerStorageAlias}/`, ""),
@@ -2920,7 +2940,10 @@ function CompatibleModelsSection({
         throw new Error(t("failedRemoveModelFromDatabase"));
       }
       // Also delete the alias
-      await onDeleteAlias(alias);
+      const aliasRemoved = await onDeleteAlias(alias);
+      if (!aliasRemoved) {
+        throw new Error(t("failedDeleteModelTryAgain"));
+      }
       notify.success(t("modelRemovedSuccess"));
       onModelsChanged?.();
     } catch (error) {
@@ -2979,9 +3002,10 @@ function CompatibleModelsSection({
         <div className="flex flex-col gap-3">
           {allModels.map(({ modelId, fullModel, alias }) => (
             <PassthroughModelRow
-              key={fullModel as string}
+              key={alias}
               modelId={modelId}
               fullModel={`${providerDisplayAlias}/${modelId}`}
+              alias={alias}
               copied={copied}
               onCopy={onCopy}
               onDeleteAlias={() => handleDeleteModel(modelId, alias)}

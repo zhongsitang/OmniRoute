@@ -3270,9 +3270,7 @@ function ConnectionRow({
   // Use useState + useEffect for impure Date.now() to avoid calling during render
   const [isCooldown, setIsCooldown] = useState(false);
   const isGeminiCliConnection = connection.provider === "gemini-cli";
-  const effectiveTokenExpiryAt = isGeminiCliConnection
-    ? connection.tokenExpiresAt || connection.expiresAt
-    : connection.expiresAt;
+  const effectiveTokenExpiryAt = connection.tokenExpiresAt || connection.expiresAt;
   // T12: token expiry status — lazy init avoids calling Date.now() during render;
   // updates every 30s via interval only (no sync setState in effect body).
   const getTokenMinsLeft = () => {

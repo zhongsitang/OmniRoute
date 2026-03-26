@@ -158,8 +158,13 @@ export async function updateProviderCredentials(connectionId: string, newCredent
       updates.refreshToken = newCredentials.refreshToken;
     }
     if (newCredentials.expiresIn) {
-      updates.expiresAt = new Date(Date.now() + newCredentials.expiresIn * 1000).toISOString();
+      const refreshedExpiry = new Date(Date.now() + newCredentials.expiresIn * 1000).toISOString();
+      updates.expiresAt = refreshedExpiry;
+      updates.tokenExpiresAt = refreshedExpiry;
       updates.expiresIn = newCredentials.expiresIn;
+    } else if (newCredentials.expiresAt) {
+      updates.expiresAt = newCredentials.expiresAt;
+      updates.tokenExpiresAt = newCredentials.expiresAt;
     }
     if (newCredentials.providerSpecificData) {
       updates.providerSpecificData = newCredentials.providerSpecificData;
@@ -188,8 +193,11 @@ export async function checkAndRefreshToken(provider: string, credentials: any) {
   let updatedCredentials = { ...credentials };
 
   // Check regular token expiry
-  if (updatedCredentials.expiresAt) {
-    const expiresAt = new Date(updatedCredentials.expiresAt).getTime();
+  const effectiveExpiresAt =
+    updatedCredentials.tokenExpiresAt || updatedCredentials.expiresAt || null;
+
+  if (effectiveExpiresAt) {
+    const expiresAt = new Date(effectiveExpiresAt).getTime();
     const now = Date.now();
 
     if (expiresAt - now < TOKEN_EXPIRY_BUFFER_MS) {
@@ -216,7 +224,10 @@ export async function checkAndRefreshToken(provider: string, credentials: any) {
           refreshToken: newCredentials.refreshToken || updatedCredentials.refreshToken,
           expiresAt: newCredentials.expiresIn
             ? new Date(Date.now() + newCredentials.expiresIn * 1000).toISOString()
-            : updatedCredentials.expiresAt,
+            : newCredentials.expiresAt || effectiveExpiresAt,
+          tokenExpiresAt: newCredentials.expiresIn
+            ? new Date(Date.now() + newCredentials.expiresIn * 1000).toISOString()
+            : newCredentials.expiresAt || updatedCredentials.tokenExpiresAt,
         };
 
         if (provider === "gemini-cli") {

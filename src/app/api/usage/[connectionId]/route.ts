@@ -81,9 +81,12 @@ async function refreshAndUpdateCredentials(connection: any) {
 
   // Update token expiry
   if (refreshResult.expiresIn) {
-    updateData.tokenExpiresAt = new Date(Date.now() + refreshResult.expiresIn * 1000).toISOString();
+    const refreshedExpiry = new Date(Date.now() + refreshResult.expiresIn * 1000).toISOString();
+    updateData.tokenExpiresAt = refreshedExpiry;
+    updateData.expiresAt = refreshedExpiry;
   } else if (refreshResult.expiresAt) {
     updateData.tokenExpiresAt = refreshResult.expiresAt;
+    updateData.expiresAt = refreshResult.expiresAt;
   }
 
   // Handle provider-specific data (copilotToken for GitHub, etc.)

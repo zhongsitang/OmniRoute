@@ -38,7 +38,7 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
       connectionId: id,
       accessToken: connection.accessToken,
       refreshToken: connection.refreshToken,
-      expiresAt: connection.expiresAt,
+      expiresAt: connection.tokenExpiresAt || connection.expiresAt,
       expiresIn: connection.expiresIn,
       idToken: connection.idToken,
       providerSpecificData: connection.providerSpecificData,

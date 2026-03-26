@@ -266,7 +266,7 @@ async function refreshOAuthToken(connection: any) {
  * Check if token is expired or about to expire (within 5 minutes)
  */
 function isTokenExpired(connection: any) {
-  const expiresAtValue = connection.expiresAt || connection.tokenExpiresAt;
+  const expiresAtValue = connection.tokenExpiresAt || connection.expiresAt;
   if (!expiresAtValue) return false;
   const expiresAt = new Date(expiresAtValue).getTime();
   const buffer = 5 * 60 * 1000; // 5 minutes
@@ -608,7 +608,11 @@ export async function testSingleConnection(connectionId: string) {
       updateData.refreshToken = result.newTokens.refreshToken;
     }
     if (result.newTokens.expiresIn) {
-      updateData.expiresAt = new Date(Date.now() + result.newTokens.expiresIn * 1000).toISOString();
+      const refreshedExpiry = new Date(
+        Date.now() + result.newTokens.expiresIn * 1000
+      ).toISOString();
+      updateData.expiresAt = refreshedExpiry;
+      updateData.tokenExpiresAt = refreshedExpiry;
     }
   }
 

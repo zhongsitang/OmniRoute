@@ -44,6 +44,7 @@ export async function POST(request: any) {
 
     // Try to extract user info from token
     const userInfo = cursorService.extractUserInfo(tokenData.accessToken);
+    const expiresAt = new Date(Date.now() + tokenData.expiresIn * 1000).toISOString();
 
     // Save to database
     const connection: any = await createProviderConnection({
@@ -51,7 +52,8 @@ export async function POST(request: any) {
       authType: "oauth",
       accessToken: tokenData.accessToken,
       refreshToken: null, // Cursor doesn't have public refresh endpoint
-      expiresAt: new Date(Date.now() + tokenData.expiresIn * 1000).toISOString(),
+      expiresAt,
+      tokenExpiresAt: expiresAt,
       email: userInfo?.email || null,
       providerSpecificData: {
         machineId: tokenData.machineId,

@@ -262,6 +262,7 @@ export async function POST(
           connection = await updateProviderConnection(matchId, {
             ...tokenData,
             expiresAt,
+            tokenExpiresAt: expiresAt,
             testStatus: "active",
             isActive: true,
           });
@@ -273,6 +274,7 @@ export async function POST(
           authType: "oauth",
           ...tokenData,
           expiresAt,
+          tokenExpiresAt: expiresAt,
           testStatus: "active",
         });
       }
@@ -345,6 +347,7 @@ export async function POST(
             connection = await updateProviderConnection(matchId, {
               ...result.tokens,
               expiresAt,
+              tokenExpiresAt: expiresAt,
               testStatus: "active",
               isActive: true,
             });
@@ -356,6 +359,7 @@ export async function POST(
             authType: "oauth",
             ...result.tokens,
             expiresAt,
+            tokenExpiresAt: expiresAt,
             testStatus: "active",
           });
         }
@@ -470,6 +474,7 @@ export async function POST(
             connection = await updateProviderConnection(matchId, {
               ...tokenData,
               expiresAt,
+              tokenExpiresAt: expiresAt,
               testStatus: "active",
               isActive: true,
             });
@@ -481,6 +486,7 @@ export async function POST(
             authType: "oauth",
             ...tokenData,
             expiresAt,
+            tokenExpiresAt: expiresAt,
             testStatus: "active",
           });
         }

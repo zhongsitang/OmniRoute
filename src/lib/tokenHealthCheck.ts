@@ -259,7 +259,9 @@ async function checkConnection(conn) {
     }
 
     if (result.expiresIn) {
-      updateData.tokenExpiresAt = new Date(Date.now() + result.expiresIn * 1000).toISOString();
+      const refreshedExpiry = new Date(Date.now() + result.expiresIn * 1000).toISOString();
+      updateData.tokenExpiresAt = refreshedExpiry;
+      updateData.expiresAt = refreshedExpiry;
     }
 
     await updateProviderConnection(conn.id, updateData);

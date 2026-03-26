@@ -45,6 +45,7 @@ export async function POST(request: any) {
 
     // Extract email from JWT if available
     const email = kiroService.extractEmailFromJWT(tokenData.accessToken);
+    const expiresAt = new Date(Date.now() + tokenData.expiresIn * 1000).toISOString();
 
     // Save to database
     const connection: any = await createProviderConnection({
@@ -52,7 +53,8 @@ export async function POST(request: any) {
       authType: "oauth",
       accessToken: tokenData.accessToken,
       refreshToken: tokenData.refreshToken,
-      expiresAt: new Date(Date.now() + tokenData.expiresIn * 1000).toISOString(),
+      expiresAt,
+      tokenExpiresAt: expiresAt,
       email: email || null,
       providerSpecificData: {
         profileArn: tokenData.profileArn,

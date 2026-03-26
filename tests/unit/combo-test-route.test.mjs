@@ -9,7 +9,6 @@ process.env.DATA_DIR = TEST_DATA_DIR;
 
 const core = await import("../../src/lib/db/core.ts");
 const combosDb = await import("../../src/lib/db/combos.ts");
-const providersDb = await import("../../src/lib/db/providers.ts");
 const comboTestRoute = await import("../../src/app/api/combos/test/route.ts");
 
 async function resetStorage() {
@@ -36,7 +35,12 @@ async function runComboProbeTest(comboName, model, protocol, expected) {
   let seenHeaders = null;
 
   globalThis.fetch = async (url, options = {}) => {
-    seenUrl = String(url);
+    const stringUrl = String(url);
+    if (stringUrl.includes("/api/providers/")) {
+      throw new Error(`Unexpected inventory fetch: ${stringUrl}`);
+    }
+
+    seenUrl = stringUrl;
     seenHeaders = options.headers || {};
     seenBody = JSON.parse(String(options.body || "{}"));
 
@@ -135,58 +139,49 @@ test("combo test route defaults to responses protocol when omitted", async () =>
   });
 });
 
-test("combo test route short-circuits unavailable gemini-cli models before upstream probe", async () => {
+test("combo test route probes gemini-cli models through the standard probe path", async () => {
+  await resetStorage();
+  await runComboProbeTest("combo-route-test-gemini-standard", "gc/gemini-2.5-pro", "chat", {
+    url: "http://localhost:20128/v1/chat/completions",
+    body: {
+      model: "gc/gemini-2.5-pro",
+      messages: [{ role: "user", content: "Hi" }],
+      max_completion_tokens: 5,
+      stream: false,
+    },
+  });
+});
+
+test("combo test route surfaces upstream gemini-cli probe errors directly", async () => {
   await resetStorage();
 
-  const connection = await providersDb.createProviderConnection({
-    provider: "gemini-cli",
-    authType: "oauth",
-    name: "Gemini CLI Active",
-    email: "combo-gemini@example.com",
-    accessToken: "access-token",
-    refreshToken: "refresh-token",
-    expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-    projectId: "project-123",
-    providerSpecificData: { projectId: "project-123" },
-    isActive: true,
-    priority: 1,
-  });
-
   await combosDb.createCombo({
-    name: "combo-route-test-gemini-unavailable",
+    name: "combo-route-test-gemini-upstream-error",
     strategy: "priority",
     models: ["gc/gemini-3.1-pro"],
   });
 
   const originalFetch = globalThis.fetch;
-  let sawInventoryFetch = false;
-  let sawUpstreamProbe = false;
+  let sawProbeCount = 0;
 
   globalThis.fetch = async (url) => {
     const stringUrl = String(url);
-
-    if (stringUrl === `http://localhost:20128/api/providers/${connection.id}/models`) {
-      sawInventoryFetch = true;
+    if (stringUrl.includes("/api/providers/")) {
+      throw new Error(`Unexpected inventory fetch: ${stringUrl}`);
+    }
+    if (stringUrl === "http://localhost:20128/v1/chat/completions") {
+      sawProbeCount += 1;
       return new Response(
         JSON.stringify({
-          provider: "gemini-cli",
-          connectionId: connection.id,
-          models: [{ id: "gemini-2.5-pro", name: "Gemini 2.5 Pro" }],
-          source: "dynamic",
+          error: {
+            message: "Gemini upstream 404",
+          },
         }),
         {
-          status: 200,
+          status: 404,
           headers: { "Content-Type": "application/json" },
         }
       );
-    }
-
-    if (stringUrl.includes("/v1/")) {
-      sawUpstreamProbe = true;
-      return new Response(JSON.stringify({ id: "resp_test_1", output: [] }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
     }
 
     throw new Error(`Unexpected fetch URL: ${stringUrl}`);
@@ -196,421 +191,30 @@ test("combo test route short-circuits unavailable gemini-cli models before upstr
     const request = new Request("http://localhost:20128/api/combos/test", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ comboName: "combo-route-test-gemini-unavailable", protocol: "chat" }),
+      body: JSON.stringify({
+        comboName: "combo-route-test-gemini-upstream-error",
+        protocol: "chat",
+      }),
     });
 
     const response = await comboTestRoute.POST(request);
     const payload = await response.json();
 
     assert.equal(response.status, 200);
+    assert.equal(sawProbeCount, 1);
     assert.equal(payload.results[0].status, "error");
     assert.equal(payload.results[0].statusCode, 404);
-    assert.match(payload.results[0].error, /not available for the current Gemini CLI account/i);
-    assert.equal(sawInventoryFetch, true);
-    assert.equal(sawUpstreamProbe, false);
+    assert.equal(payload.results[0].error, "Gemini upstream 404");
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("combo test route preserves gemini-cli inventory failures without upstream probe", async () => {
+test("combo test route times out a stalled standard probe", async () => {
   await resetStorage();
 
-  const connection = await providersDb.createProviderConnection({
-    provider: "gemini-cli",
-    authType: "oauth",
-    name: "Gemini CLI Broken",
-    email: "combo-gemini-broken@example.com",
-    accessToken: "access-token",
-    refreshToken: "refresh-token",
-    expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-    projectId: "project-456",
-    providerSpecificData: { projectId: "project-456" },
-    isActive: true,
-    priority: 1,
-  });
-
   await combosDb.createCombo({
-    name: "combo-route-test-gemini-inventory-error",
-    strategy: "priority",
-    models: ["gc/gemini-3.1-pro"],
-  });
-
-  const originalFetch = globalThis.fetch;
-  let sawUpstreamProbe = false;
-
-  globalThis.fetch = async (url) => {
-    const stringUrl = String(url);
-
-    if (stringUrl === `http://localhost:20128/api/providers/${connection.id}/models`) {
-      return new Response(
-        JSON.stringify({
-          error: "Gemini CLI retrieveUserQuota failed: 500",
-          source: "dynamic",
-        }),
-        {
-          status: 500,
-          headers: { "Content-Type": "application/json" },
-        }
-      );
-    }
-
-    if (stringUrl.includes("/v1/")) {
-      sawUpstreamProbe = true;
-      return new Response(JSON.stringify({ id: "resp_test_1", output: [] }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-
-    throw new Error(`Unexpected fetch URL: ${stringUrl}`);
-  };
-
-  try {
-    const request = new Request("http://localhost:20128/api/combos/test", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        comboName: "combo-route-test-gemini-inventory-error",
-        protocol: "chat",
-      }),
-    });
-
-    const response = await comboTestRoute.POST(request);
-    const payload = await response.json();
-
-    assert.equal(response.status, 200);
-    assert.equal(payload.results[0].status, "error");
-    assert.equal(payload.results[0].statusCode, 500);
-    assert.match(payload.results[0].error, /retrieveUserQuota failed: 500/i);
-    assert.equal(sawUpstreamProbe, false);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test("combo test route continues past a broken gemini-cli inventory when another connection supports the model", async () => {
-  await resetStorage();
-
-  const brokenConnection = await providersDb.createProviderConnection({
-    provider: "gemini-cli",
-    authType: "oauth",
-    name: "Gemini CLI Broken First",
-    email: "combo-gemini-broken-first@example.com",
-    accessToken: "access-token",
-    refreshToken: "refresh-token",
-    expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-    projectId: "project-broken",
-    providerSpecificData: { projectId: "project-broken" },
-    isActive: true,
-    priority: 1,
-  });
-
-  const healthyConnection = await providersDb.createProviderConnection({
-    provider: "gemini-cli",
-    authType: "oauth",
-    name: "Gemini CLI Healthy Second",
-    email: "combo-gemini-healthy-second@example.com",
-    accessToken: "access-token",
-    refreshToken: "refresh-token",
-    expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-    projectId: "project-healthy",
-    providerSpecificData: { projectId: "project-healthy" },
-    isActive: true,
-    priority: 2,
-  });
-
-  await combosDb.createCombo({
-    name: "combo-route-test-gemini-failover",
-    strategy: "priority",
-    models: ["gc/gemini-2.5-pro"],
-  });
-
-  const originalFetch = globalThis.fetch;
-  let sawUpstreamProbe = false;
-
-  globalThis.fetch = async (url) => {
-    const stringUrl = String(url);
-
-    if (stringUrl === `http://localhost:20128/api/providers/${brokenConnection.id}/models`) {
-      throw new Error("inventory exploded");
-    }
-
-    if (stringUrl === `http://localhost:20128/api/providers/${healthyConnection.id}/models`) {
-      return new Response(
-        JSON.stringify({
-          provider: "gemini-cli",
-          connectionId: healthyConnection.id,
-          models: [{ id: "gemini-2.5-pro", name: "Gemini 2.5 Pro" }],
-          source: "dynamic",
-        }),
-        {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        }
-      );
-    }
-
-    if (stringUrl.includes("/v1/chat/completions")) {
-      sawUpstreamProbe = true;
-      return new Response(
-        JSON.stringify({
-          id: "chatcmpl_test_1",
-          object: "chat.completion",
-          created: 1,
-          model: "gc/gemini-2.5-pro",
-          choices: [
-            { index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" },
-          ],
-        }),
-        {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        }
-      );
-    }
-
-    throw new Error(`Unexpected fetch URL: ${stringUrl}`);
-  };
-
-  try {
-    const request = new Request("http://localhost:20128/api/combos/test", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ comboName: "combo-route-test-gemini-failover", protocol: "chat" }),
-    });
-
-    const response = await comboTestRoute.POST(request);
-    const payload = await response.json();
-
-    assert.equal(response.status, 200);
-    assert.equal(payload.results[0].status, "ok");
-    assert.equal(payload.resolvedBy, "gc/gemini-2.5-pro");
-    assert.equal(sawUpstreamProbe, true);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test("combo test route preserves inventory failure when other gemini-cli accounts do not list the model", async () => {
-  await resetStorage();
-
-  const missingModelConnection = await providersDb.createProviderConnection({
-    provider: "gemini-cli",
-    authType: "oauth",
-    name: "Gemini CLI Missing Model",
-    email: "combo-gemini-missing@example.com",
-    accessToken: "access-token",
-    refreshToken: "refresh-token",
-    expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-    projectId: "project-missing",
-    providerSpecificData: { projectId: "project-missing" },
-    isActive: true,
-    priority: 1,
-  });
-
-  const brokenConnection = await providersDb.createProviderConnection({
-    provider: "gemini-cli",
-    authType: "oauth",
-    name: "Gemini CLI Broken Later",
-    email: "combo-gemini-broken-later@example.com",
-    accessToken: "access-token",
-    refreshToken: "refresh-token",
-    expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-    projectId: "project-broken-later",
-    providerSpecificData: { projectId: "project-broken-later" },
-    isActive: true,
-    priority: 2,
-  });
-
-  await combosDb.createCombo({
-    name: "combo-route-test-gemini-uncertain",
-    strategy: "priority",
-    models: ["gc/gemini-3.1-pro"],
-  });
-
-  const originalFetch = globalThis.fetch;
-  let sawUpstreamProbe = false;
-
-  globalThis.fetch = async (url) => {
-    const stringUrl = String(url);
-
-    if (stringUrl === `http://localhost:20128/api/providers/${missingModelConnection.id}/models`) {
-      return new Response(
-        JSON.stringify({
-          provider: "gemini-cli",
-          connectionId: missingModelConnection.id,
-          models: [{ id: "gemini-2.5-pro", name: "Gemini 2.5 Pro" }],
-          source: "dynamic",
-        }),
-        {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        }
-      );
-    }
-
-    if (stringUrl === `http://localhost:20128/api/providers/${brokenConnection.id}/models`) {
-      return new Response(
-        JSON.stringify({
-          error: "Gemini CLI retrieveUserQuota failed: 500",
-          source: "dynamic",
-        }),
-        {
-          status: 500,
-          headers: { "Content-Type": "application/json" },
-        }
-      );
-    }
-
-    if (stringUrl.includes("/v1/")) {
-      sawUpstreamProbe = true;
-      return new Response(JSON.stringify({ id: "resp_test_1", output: [] }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-
-    throw new Error(`Unexpected fetch URL: ${stringUrl}`);
-  };
-
-  try {
-    const request = new Request("http://localhost:20128/api/combos/test", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ comboName: "combo-route-test-gemini-uncertain", protocol: "chat" }),
-    });
-
-    const response = await comboTestRoute.POST(request);
-    const payload = await response.json();
-
-    assert.equal(response.status, 200);
-    assert.equal(payload.results[0].status, "error");
-    assert.equal(payload.results[0].statusCode, 500);
-    assert.match(payload.results[0].error, /retrieveUserQuota failed: 500/i);
-    assert.equal(sawUpstreamProbe, false);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test("combo test route forwards auth headers to gemini-cli inventory requests", async () => {
-  await resetStorage();
-
-  const connection = await providersDb.createProviderConnection({
-    provider: "gemini-cli",
-    authType: "oauth",
-    name: "Gemini CLI Auth Forward",
-    email: "combo-gemini-auth@example.com",
-    accessToken: "access-token",
-    refreshToken: "refresh-token",
-    expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-    projectId: "project-auth",
-    providerSpecificData: { projectId: "project-auth" },
-    isActive: true,
-    priority: 1,
-  });
-
-  await combosDb.createCombo({
-    name: "combo-route-test-gemini-auth-forward",
-    strategy: "priority",
-    models: ["gc/gemini-2.5-pro"],
-  });
-
-  const originalFetch = globalThis.fetch;
-  let forwardedCookie = null;
-  let forwardedAuthorization = null;
-  let sawUpstreamProbe = false;
-
-  globalThis.fetch = async (url, options = {}) => {
-    const stringUrl = String(url);
-
-    if (stringUrl === `http://localhost:20128/api/providers/${connection.id}/models`) {
-      const headers = new Headers(options.headers);
-      forwardedCookie = headers.get("cookie");
-      forwardedAuthorization = headers.get("authorization");
-      return new Response(
-        JSON.stringify({
-          provider: "gemini-cli",
-          connectionId: connection.id,
-          models: [{ id: "gemini-2.5-pro", name: "Gemini 2.5 Pro" }],
-          source: "dynamic",
-        }),
-        {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        }
-      );
-    }
-
-    if (stringUrl.includes("/v1/chat/completions")) {
-      sawUpstreamProbe = true;
-      return new Response(
-        JSON.stringify({
-          id: "chatcmpl_test_auth",
-          object: "chat.completion",
-          created: 1,
-          model: "gc/gemini-2.5-pro",
-          choices: [
-            { index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" },
-          ],
-        }),
-        {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        }
-      );
-    }
-
-    throw new Error(`Unexpected fetch URL: ${stringUrl}`);
-  };
-
-  try {
-    const request = new Request("http://localhost:20128/api/combos/test", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        cookie: "auth_token=test-session",
-        authorization: "Bearer combo-test-key",
-      },
-      body: JSON.stringify({
-        comboName: "combo-route-test-gemini-auth-forward",
-        protocol: "chat",
-      }),
-    });
-
-    const response = await comboTestRoute.POST(request);
-    const payload = await response.json();
-
-    assert.equal(response.status, 200);
-    assert.equal(payload.results[0].status, "ok");
-    assert.equal(sawUpstreamProbe, true);
-    assert.equal(forwardedCookie, "auth_token=test-session");
-    assert.equal(forwardedAuthorization, "Bearer combo-test-key");
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
-test("combo test route times out stalled gemini-cli inventory requests", async () => {
-  await resetStorage();
-
-  const connection = await providersDb.createProviderConnection({
-    provider: "gemini-cli",
-    authType: "oauth",
-    name: "Gemini CLI Timeout",
-    email: "combo-gemini-timeout@example.com",
-    accessToken: "access-token",
-    refreshToken: "refresh-token",
-    expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-    projectId: "project-timeout",
-    providerSpecificData: { projectId: "project-timeout" },
-    isActive: true,
-    priority: 1,
-  });
-
-  await combosDb.createCombo({
-    name: "combo-route-test-gemini-timeout",
+    name: "combo-route-test-timeout",
     strategy: "priority",
     models: ["gc/gemini-2.5-pro"],
   });
@@ -618,15 +222,16 @@ test("combo test route times out stalled gemini-cli inventory requests", async (
   const originalFetch = globalThis.fetch;
   const originalSetTimeout = globalThis.setTimeout;
   const originalClearTimeout = globalThis.clearTimeout;
-  let sawUpstreamProbe = false;
 
   globalThis.setTimeout = (callback, _delay, ...args) => originalSetTimeout(callback, 0, ...args);
   globalThis.clearTimeout = (timeoutId) => originalClearTimeout(timeoutId);
 
   globalThis.fetch = async (url, options = {}) => {
     const stringUrl = String(url);
-
-    if (stringUrl === `http://localhost:20128/api/providers/${connection.id}/models`) {
+    if (stringUrl.includes("/api/providers/")) {
+      throw new Error(`Unexpected inventory fetch: ${stringUrl}`);
+    }
+    if (stringUrl === "http://localhost:20128/v1/chat/completions") {
       return await new Promise((resolve, reject) => {
         if (options.signal.aborted) {
           const error = new Error("aborted");
@@ -647,14 +252,6 @@ test("combo test route times out stalled gemini-cli inventory requests", async (
       });
     }
 
-    if (stringUrl.includes("/v1/")) {
-      sawUpstreamProbe = true;
-      return new Response(JSON.stringify({ id: "resp_test_1", output: [] }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-
     throw new Error(`Unexpected fetch URL: ${stringUrl}`);
   };
 
@@ -662,7 +259,7 @@ test("combo test route times out stalled gemini-cli inventory requests", async (
     const request = new Request("http://localhost:20128/api/combos/test", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ comboName: "combo-route-test-gemini-timeout", protocol: "chat" }),
+      body: JSON.stringify({ comboName: "combo-route-test-timeout", protocol: "chat" }),
     });
 
     const response = await comboTestRoute.POST(request);
@@ -670,9 +267,7 @@ test("combo test route times out stalled gemini-cli inventory requests", async (
 
     assert.equal(response.status, 200);
     assert.equal(payload.results[0].status, "error");
-    assert.equal(payload.results[0].statusCode, 504);
-    assert.match(payload.results[0].error, /model discovery timed out/i);
-    assert.equal(sawUpstreamProbe, false);
+    assert.equal(payload.results[0].error, "Timeout (20s)");
   } finally {
     globalThis.fetch = originalFetch;
     globalThis.setTimeout = originalSetTimeout;
@@ -680,36 +275,28 @@ test("combo test route times out stalled gemini-cli inventory requests", async (
   }
 });
 
-test("combo test route cancels gemini-cli inventory requests when the parent request aborts", async () => {
+test("combo test route cancels an in-flight standard probe when the parent request aborts", async () => {
   await resetStorage();
 
-  const connection = await providersDb.createProviderConnection({
-    provider: "gemini-cli",
-    authType: "oauth",
-    name: "Gemini CLI Abort",
-    email: "combo-gemini-abort@example.com",
-    accessToken: "access-token",
-    refreshToken: "refresh-token",
-    expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-    projectId: "project-abort",
-    providerSpecificData: { projectId: "project-abort" },
-    isActive: true,
-    priority: 1,
-  });
-
   await combosDb.createCombo({
-    name: "combo-route-test-gemini-abort",
+    name: "combo-route-test-abort",
     strategy: "priority",
     models: ["gc/gemini-2.5-pro"],
   });
 
   const originalFetch = globalThis.fetch;
-  let sawUpstreamProbe = false;
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  let sawProbeCount = 0;
+  let timeoutCallbackRuns = 0;
 
   globalThis.fetch = async (url, options = {}) => {
     const stringUrl = String(url);
-
-    if (stringUrl === `http://localhost:20128/api/providers/${connection.id}/models`) {
+    if (stringUrl.includes("/api/providers/")) {
+      throw new Error(`Unexpected inventory fetch: ${stringUrl}`);
+    }
+    if (stringUrl === "http://localhost:20128/v1/chat/completions") {
+      sawProbeCount += 1;
       return await new Promise((resolve, reject) => {
         if (options.signal.aborted) {
           const error = new Error("aborted");
@@ -730,122 +317,42 @@ test("combo test route cancels gemini-cli inventory requests when the parent req
       });
     }
 
-    if (stringUrl.includes("/v1/")) {
-      sawUpstreamProbe = true;
-      return new Response(JSON.stringify({ id: "resp_test_1", output: [] }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-
     throw new Error(`Unexpected fetch URL: ${stringUrl}`);
   };
+
+  globalThis.setTimeout = (_callback, _delay, ..._args) => ({ fake: true });
+  globalThis.clearTimeout = () => {};
 
   try {
     const requestController = new AbortController();
-    const request = new Request("http://localhost:20128/api/combos/test", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ comboName: "combo-route-test-gemini-abort", protocol: "chat" }),
+    requestController.abort();
+    const request = {
+      url: "http://localhost:20128/api/combos/test",
+      headers: new Headers({ "content-type": "application/json" }),
       signal: requestController.signal,
-    });
+      json: async () => ({ comboName: "combo-route-test-abort", protocol: "chat" }),
+    };
 
     const responsePromise = comboTestRoute.POST(request);
-    requestController.abort();
+    const timeoutSentinel = Symbol("timeout");
+    const raced = await Promise.race([
+      responsePromise,
+      new Promise((resolve) => originalSetTimeout(() => resolve(timeoutSentinel), 100)),
+    ]);
 
-    const response = await responsePromise;
+    assert.notEqual(raced, timeoutSentinel, "probe should finish without waiting for timeout");
+
+    const response = raced;
     const payload = await response.json();
 
     assert.equal(response.status, 200);
+    assert.equal(sawProbeCount, 1);
+    assert.equal(timeoutCallbackRuns, 0);
     assert.deepEqual(payload.results, []);
     assert.equal(payload.resolvedBy, null);
-    assert.equal(sawUpstreamProbe, false);
   } finally {
     globalThis.fetch = originalFetch;
-  }
-});
-
-test("combo test route caches in-flight gemini-cli inventory lookups across concurrent models", async () => {
-  await resetStorage();
-
-  const connection = await providersDb.createProviderConnection({
-    provider: "gemini-cli",
-    authType: "oauth",
-    name: "Gemini CLI Shared Inventory",
-    email: "combo-gemini-shared@example.com",
-    accessToken: "access-token",
-    refreshToken: "refresh-token",
-    expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-    projectId: "project-shared",
-    providerSpecificData: { projectId: "project-shared" },
-    isActive: true,
-    priority: 1,
-  });
-
-  await combosDb.createCombo({
-    name: "combo-route-test-gemini-cache",
-    strategy: "priority",
-    models: ["gc/gemini-3.1-pro", "gc/gemini-3.1-flash"],
-  });
-
-  const originalFetch = globalThis.fetch;
-  let inventoryFetchCount = 0;
-  let sawUpstreamProbe = false;
-
-  globalThis.fetch = async (url) => {
-    const stringUrl = String(url);
-
-    if (stringUrl === `http://localhost:20128/api/providers/${connection.id}/models`) {
-      inventoryFetchCount += 1;
-      await new Promise((resolve) => setTimeout(resolve, 25));
-      return new Response(
-        JSON.stringify({
-          provider: "gemini-cli",
-          connectionId: connection.id,
-          models: [{ id: "gemini-2.5-pro", name: "Gemini 2.5 Pro" }],
-          source: "dynamic",
-        }),
-        {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        }
-      );
-    }
-
-    if (stringUrl.includes("/v1/")) {
-      sawUpstreamProbe = true;
-      return new Response(JSON.stringify({ id: "resp_test_1", output: [] }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-
-    throw new Error(`Unexpected fetch URL: ${stringUrl}`);
-  };
-
-  try {
-    const request = new Request("http://localhost:20128/api/combos/test", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ comboName: "combo-route-test-gemini-cache", protocol: "chat" }),
-    });
-
-    const response = await comboTestRoute.POST(request);
-    const payload = await response.json();
-
-    assert.equal(response.status, 200);
-    assert.equal(payload.results.length, 2);
-    assert.equal(
-      payload.results.every((result) => result.status === "error"),
-      true
-    );
-    assert.equal(
-      payload.results.every((result) => result.statusCode === 404),
-      true
-    );
-    assert.equal(inventoryFetchCount, 1);
-    assert.equal(sawUpstreamProbe, false);
-  } finally {
-    globalThis.fetch = originalFetch;
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
   }
 });

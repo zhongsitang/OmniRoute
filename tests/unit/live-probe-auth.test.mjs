@@ -122,3 +122,129 @@ test("live probe chat failures do not mark the account unavailable", async () =>
     globalThis.fetch = originalFetch;
   }
 });
+
+test("live probe chat failures do not try a second account", async () => {
+  await resetStorage();
+
+  await providersDb.createProviderConnection({
+    provider: "openai",
+    authType: "apikey",
+    name: "Probe First Account",
+    apiKey: "sk-live-probe-first",
+    isActive: true,
+    testStatus: "active",
+  });
+
+  await providersDb.createProviderConnection({
+    provider: "openai",
+    authType: "apikey",
+    name: "Probe Second Account",
+    apiKey: "sk-live-probe-second",
+    isActive: true,
+    testStatus: "active",
+  });
+
+  const originalFetch = globalThis.fetch;
+  let requestCount = 0;
+
+  globalThis.fetch = async () => {
+    requestCount += 1;
+    return Response.json(
+      {
+        error: {
+          message: "First probe failed",
+          type: "invalid_request_error",
+        },
+      },
+      {
+        status: 401,
+        headers: { "content-type": "application/json" },
+      }
+    );
+  };
+
+  try {
+    const response = await chatRoute.POST(
+      new Request("http://localhost:20128/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-omniroute-live-probe": "true",
+        },
+        body: JSON.stringify({
+          model: "openai/gpt-4o-mini",
+          messages: [{ role: "user", content: "Hi" }],
+          stream: false,
+        }),
+      })
+    );
+
+    const payload = await response.json();
+
+    assert.equal(response.status, 401);
+    assert.equal(requestCount, 1);
+    assert.match(payload.error.message, /First probe failed/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("live probe quota failures do not trigger emergency fallback to a second model", async () => {
+  await resetStorage();
+
+  await providersDb.createProviderConnection({
+    provider: "openai",
+    authType: "apikey",
+    name: "Probe Billing Account",
+    apiKey: "sk-live-probe-billing",
+    isActive: true,
+    testStatus: "active",
+  });
+
+  const originalFetch = globalThis.fetch;
+  let requestCount = 0;
+  const seenBodies = [];
+
+  globalThis.fetch = async (_url, options = {}) => {
+    requestCount += 1;
+    seenBodies.push(JSON.parse(String(options.body || "{}")));
+    return Response.json(
+      {
+        error: {
+          message: "Billing quota exhausted",
+          type: "billing_error",
+        },
+      },
+      {
+        status: 402,
+        headers: { "content-type": "application/json" },
+      }
+    );
+  };
+
+  try {
+    const response = await chatRoute.POST(
+      new Request("http://localhost:20128/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-omniroute-live-probe": "true",
+        },
+        body: JSON.stringify({
+          model: "openai/gpt-4o-mini",
+          messages: [{ role: "user", content: "Hi" }],
+          stream: false,
+        }),
+      })
+    );
+
+    const payload = await response.json();
+
+    assert.equal(response.status, 402);
+    assert.equal(requestCount, 1);
+    assert.match(seenBodies[0].model, /gpt-4o-mini/);
+    assert.match(payload.error.message, /Billing quota exhausted/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

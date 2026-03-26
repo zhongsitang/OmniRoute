@@ -266,6 +266,7 @@ interface ConnectionRowConnection {
   name?: string;
   email?: string;
   displayName?: string;
+  provider?: string;
   rateLimitedUntil?: string;
   rateLimitProtection?: boolean;
   testStatus?: string;
@@ -278,6 +279,7 @@ interface ConnectionRowConnection {
   globalPriority?: number;
   providerSpecificData?: Record<string, unknown>;
   expiresAt?: string;
+  tokenExpiresAt?: string;
 }
 
 interface ConnectionRowProps {
@@ -3215,24 +3217,33 @@ function ConnectionRow({
 
   // Use useState + useEffect for impure Date.now() to avoid calling during render
   const [isCooldown, setIsCooldown] = useState(false);
+  const isGeminiCliConnection = connection.provider === "gemini-cli";
+  const effectiveTokenExpiryAt = isGeminiCliConnection
+    ? connection.tokenExpiresAt || connection.expiresAt
+    : connection.expiresAt;
   // T12: token expiry status — lazy init avoids calling Date.now() during render;
   // updates every 30s via interval only (no sync setState in effect body).
   const getTokenMinsLeft = () => {
-    if (!isOAuth || !connection.expiresAt) return null;
-    const expiresMs = new Date(connection.expiresAt).getTime();
+    if (!isOAuth || !effectiveTokenExpiryAt) return null;
+    const expiresMs = new Date(effectiveTokenExpiryAt).getTime();
+    if (Number.isNaN(expiresMs)) return null;
     return Math.floor((expiresMs - Date.now()) / 60000);
   };
   const [tokenMinsLeft, setTokenMinsLeft] = useState<number | null>(getTokenMinsLeft);
 
   useEffect(() => {
-    if (!isOAuth || !connection.expiresAt) return;
+    if (!isOAuth || !effectiveTokenExpiryAt) return;
     const update = () => {
-      const expiresMs = new Date(connection.expiresAt).getTime();
+      const expiresMs = new Date(effectiveTokenExpiryAt).getTime();
+      if (Number.isNaN(expiresMs)) {
+        setTokenMinsLeft(null);
+        return;
+      }
       setTokenMinsLeft(Math.floor((expiresMs - Date.now()) / 60000));
     };
     const iv = setInterval(update, 30000);
     return () => clearInterval(iv);
-  }, [isOAuth, connection.expiresAt]);
+  }, [effectiveTokenExpiryAt, isOAuth]);
 
   useEffect(() => {
     const checkCooldown = () => {
@@ -3255,7 +3266,28 @@ function ConnectionRow({
       ? "active" // Cooldown expired → treat as active
       : connection.testStatus;
 
+  const inferredErrorType = inferErrorType(connection, isCooldown);
   const statusPresentation = getStatusPresentation(connection, effectiveStatus, isCooldown, t);
+  const geminiErrorCode = Number(connection.errorCode);
+  const geminiLastErrorType = (connection.lastErrorType || "").toLowerCase();
+  const geminiLastError = (connection.lastError || "").toLowerCase();
+  const hasGeminiCliAuthSignal =
+    geminiLastErrorType === "invalid_grant" ||
+    ["upstream_auth_error", "auth_missing", "token_expired"].includes(geminiLastErrorType) ||
+    geminiErrorCode === 401 ||
+    geminiErrorCode === 403 ||
+    geminiLastError.includes("invalid_grant") ||
+    geminiLastError.includes("token expired") ||
+    geminiLastError.includes("token invalid") ||
+    geminiLastError.includes("revoked") ||
+    geminiLastError.includes("access denied") ||
+    geminiLastError.includes("unauthorized");
+  const hasGeminiCliAuthIssue =
+    isGeminiCliConnection && hasGeminiCliAuthSignal;
+  const showExpiredTokenIndicator =
+    isGeminiCliConnection
+      ? hasGeminiCliAuthIssue || (tokenMinsLeft !== null && tokenMinsLeft < 0)
+      : tokenMinsLeft !== null && tokenMinsLeft < 0;
   const rateLimitEnabled = !!connection.rateLimitProtection;
   const codexPolicy =
     connection.providerSpecificData &&
@@ -3300,16 +3332,19 @@ function ConnectionRow({
               {statusPresentation.statusLabel}
             </Badge>
             {/* T12: Token expiry status indicator (state-driven, no Date.now in render) */}
-            {tokenMinsLeft !== null &&
-              (tokenMinsLeft < 0 ? (
+            {showExpiredTokenIndicator ? (
                 <span
                   className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-xs font-medium bg-red-500/15 text-red-500"
-                  title={`Token expired: ${connection.expiresAt}`}
+                  title={
+                    tokenMinsLeft < 0
+                      ? `Token expired: ${effectiveTokenExpiryAt}`
+                      : `Connection auth issue: ${connection.lastErrorType || inferredErrorType || connection.testStatus || "unknown"}`
+                  }
                 >
                   <span className="material-symbols-outlined text-[11px]">error</span>
                   expired
                 </span>
-              ) : tokenMinsLeft < 30 ? (
+              ) : tokenMinsLeft !== null && tokenMinsLeft < 30 ? (
                 <span
                   className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-xs font-medium bg-amber-500/15 text-amber-500"
                   title={`Token expires in ${tokenMinsLeft}m`}
@@ -3317,7 +3352,7 @@ function ConnectionRow({
                   <span className="material-symbols-outlined text-[11px]">warning</span>
                   {`~${tokenMinsLeft}m`}
                 </span>
-              ) : null)}
+              ) : null}
             {isCooldown && connection.isActive !== false && (
               <CooldownTimer until={connection.rateLimitedUntil} />
             )}

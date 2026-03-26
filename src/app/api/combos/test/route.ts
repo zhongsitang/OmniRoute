@@ -240,11 +240,20 @@ async function loadGeminiCliInventoryForConnection(request, connectionId, invent
   }
 
   const inventoryPromise = (async () => {
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+    const controller = new AbortController();
+    const handleAbort = () => controller.abort();
+
+    request.signal.addEventListener("abort", handleAbort, { once: true });
+    if (request.signal.aborted) controller.abort();
+
     try {
       const inventoryUrl = `${getBaseUrl(request)}/api/providers/${connectionId}/models`;
+      timeout = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
       const response = await fetch(inventoryUrl, {
         method: "GET",
         headers: buildGeminiCliInventoryHeaders(request),
+        signal: controller.signal,
       });
 
       let payload = null;
@@ -269,11 +278,24 @@ async function loadGeminiCliInventoryForConnection(request, connectionId, invent
             error: payload?.error || "Failed to fetch Gemini CLI models",
           };
     } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") {
+        return {
+          ok: false,
+          statusCode: request.signal.aborted ? 503 : 504,
+          error: request.signal.aborted
+            ? "Request cancelled"
+            : `Gemini CLI model discovery timed out (${PROBE_TIMEOUT_MS / 1000}s).`,
+        };
+      }
+
       return {
         ok: false,
         statusCode: 503,
         error: error instanceof Error ? error.message : "Failed to fetch Gemini CLI models",
       };
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      request.signal.removeEventListener("abort", handleAbort);
     }
   })();
 
@@ -325,6 +347,10 @@ async function precheckGeminiCliModelAvailability(request, model, inventoryCache
     if (inventory.models.has(modelInfo.model)) {
       return null;
     }
+  }
+
+  if (firstInventoryFailure) {
+    return firstInventoryFailure;
   }
 
   if (sawSuccessfulInventory) {

@@ -215,6 +215,25 @@ async function runComboTest({ request, comboName, protocol, models, onResult }) 
   return { results: orderedResults, resolvedBy };
 }
 
+function buildGeminiCliInventoryHeaders(request) {
+  const headers = {
+    "X-OmniRoute-No-Cache": "true",
+    "Cache-Control": "no-cache",
+  };
+
+  const cookie = request.headers.get("cookie");
+  if (cookie) {
+    headers.cookie = cookie;
+  }
+
+  const authorization = request.headers.get("authorization");
+  if (authorization) {
+    headers.authorization = authorization;
+  }
+
+  return headers;
+}
+
 async function loadGeminiCliInventoryForConnection(request, connectionId, inventoryCache) {
   if (inventoryCache.has(connectionId)) {
     return await inventoryCache.get(connectionId);
@@ -225,10 +244,7 @@ async function loadGeminiCliInventoryForConnection(request, connectionId, invent
       const inventoryUrl = `${getBaseUrl(request)}/api/providers/${connectionId}/models`;
       const response = await fetch(inventoryUrl, {
         method: "GET",
-        headers: {
-          "X-OmniRoute-No-Cache": "true",
-          "Cache-Control": "no-cache",
-        },
+        headers: buildGeminiCliInventoryHeaders(request),
       });
 
       let payload = null;

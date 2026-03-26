@@ -392,6 +392,104 @@ test("combo test route continues past a broken gemini-cli inventory when another
   }
 });
 
+test("combo test route forwards auth headers to gemini-cli inventory requests", async () => {
+  await resetStorage();
+
+  const connection = await providersDb.createProviderConnection({
+    provider: "gemini-cli",
+    authType: "oauth",
+    name: "Gemini CLI Auth Forward",
+    email: "combo-gemini-auth@example.com",
+    accessToken: "access-token",
+    refreshToken: "refresh-token",
+    expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    projectId: "project-auth",
+    providerSpecificData: { projectId: "project-auth" },
+    isActive: true,
+    priority: 1,
+  });
+
+  await combosDb.createCombo({
+    name: "combo-route-test-gemini-auth-forward",
+    strategy: "priority",
+    models: ["gc/gemini-2.5-pro"],
+  });
+
+  const originalFetch = globalThis.fetch;
+  let forwardedCookie = null;
+  let forwardedAuthorization = null;
+  let sawUpstreamProbe = false;
+
+  globalThis.fetch = async (url, options = {}) => {
+    const stringUrl = String(url);
+
+    if (stringUrl === `http://localhost:20128/api/providers/${connection.id}/models`) {
+      const headers = new Headers(options.headers);
+      forwardedCookie = headers.get("cookie");
+      forwardedAuthorization = headers.get("authorization");
+      return new Response(
+        JSON.stringify({
+          provider: "gemini-cli",
+          connectionId: connection.id,
+          models: [{ id: "gemini-2.5-pro", name: "Gemini 2.5 Pro" }],
+          source: "dynamic",
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }
+      );
+    }
+
+    if (stringUrl.includes("/v1/chat/completions")) {
+      sawUpstreamProbe = true;
+      return new Response(
+        JSON.stringify({
+          id: "chatcmpl_test_auth",
+          object: "chat.completion",
+          created: 1,
+          model: "gc/gemini-2.5-pro",
+          choices: [
+            { index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }
+      );
+    }
+
+    throw new Error(`Unexpected fetch URL: ${stringUrl}`);
+  };
+
+  try {
+    const request = new Request("http://localhost:20128/api/combos/test", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        cookie: "auth_token=test-session",
+        authorization: "Bearer combo-test-key",
+      },
+      body: JSON.stringify({
+        comboName: "combo-route-test-gemini-auth-forward",
+        protocol: "chat",
+      }),
+    });
+
+    const response = await comboTestRoute.POST(request);
+    const payload = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(payload.results[0].status, "ok");
+    assert.equal(sawUpstreamProbe, true);
+    assert.equal(forwardedCookie, "auth_token=test-session");
+    assert.equal(forwardedAuthorization, "Bearer combo-test-key");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("combo test route caches in-flight gemini-cli inventory lookups across concurrent models", async () => {
   await resetStorage();
 

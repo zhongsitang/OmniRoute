@@ -358,6 +358,25 @@ interface EditCompatibleNodeModalProps {
   isAnthropic?: boolean;
 }
 
+function resolveTranslation(
+  translate: ((key: string, values?: Record<string, unknown>) => string) | undefined,
+  namespace: string,
+  key: string,
+  fallback: string
+): string {
+  if (typeof translate !== "function") return fallback;
+
+  try {
+    const translated = translate(key);
+    if (!translated || translated === key || translated === `${namespace}.${key}`) {
+      return fallback;
+    }
+    return translated;
+  } catch {
+    return fallback;
+  }
+}
+
 function normalizeCodexLimitPolicy(policy: unknown): { use5h: boolean; useWeekly: boolean } {
   const record =
     policy && typeof policy === "object" && !Array.isArray(policy)
@@ -3568,12 +3587,15 @@ function AddApiKeyModal({
 }: AddApiKeyModalProps) {
   const t = useTranslations("providers");
   const tc = useTranslations("common");
+  const scheduleTimezoneLabel = resolveTranslation(tc, "common", "scheduleTimezone", "Timezone");
   const isBailian = provider === "bailian-coding-plan";
   const defaultBailianUrl = "https://coding-intl.dashscope.aliyuncs.com/apps/anthropic/v1";
-  const useServerTimeZoneLabel =
-    typeof tc.has === "function" && tc.has("useServerTimezone")
-      ? tc("useServerTimezone")
-      : "Use server timezone";
+  const useServerTimeZoneLabel = resolveTranslation(
+    tc,
+    "common",
+    "useServerTimezone",
+    "Use server timezone"
+  );
 
   const [formData, setFormData] = useState({
     name: "",
@@ -3748,12 +3770,11 @@ function AddApiKeyModal({
         )}
         {isCompatible && (
           <Select
-            label={tc("scheduleTimezone")}
+            label={scheduleTimezoneLabel}
             value={formData.resetTimezone}
             onChange={(e) => setFormData({ ...formData, resetTimezone: e.target.value })}
             options={timeZoneOptions}
             placeholder={useServerTimeZoneLabel}
-            hint={tc("scheduleTimezoneHint")}
           />
         )}
         <Input
@@ -3816,10 +3837,13 @@ function normalizeAndValidateHttpBaseUrl(rawValue, fallbackUrl) {
 function EditConnectionModal({ isOpen, connection, onSave, onClose }: EditConnectionModalProps) {
   const t = useTranslations("providers");
   const tc = useTranslations("common");
-  const useServerTimeZoneLabel =
-    typeof tc.has === "function" && tc.has("useServerTimezone")
-      ? tc("useServerTimezone")
-      : "Use server timezone";
+  const scheduleTimezoneLabel = resolveTranslation(tc, "common", "scheduleTimezone", "Timezone");
+  const useServerTimeZoneLabel = resolveTranslation(
+    tc,
+    "common",
+    "useServerTimezone",
+    "Use server timezone"
+  );
   const [formData, setFormData] = useState({
     name: "",
     priority: 1,
@@ -4082,12 +4106,11 @@ function EditConnectionModal({ isOpen, connection, onSave, onClose }: EditConnec
         )}
         {isCompatible && !isOAuth && (
           <Select
-            label={tc("scheduleTimezone")}
+            label={scheduleTimezoneLabel}
             value={formData.resetTimezone}
             onChange={(e) => setFormData({ ...formData, resetTimezone: e.target.value })}
             options={timeZoneOptions}
             placeholder={useServerTimeZoneLabel}
-            hint={tc("scheduleTimezoneHint")}
           />
         )}
 

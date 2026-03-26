@@ -63,6 +63,15 @@ function buildCompatMap(rows: CompatModelRow[]): CompatModelMap {
   return m;
 }
 
+function getBaseModelAlias(modelId: string): string {
+  const parts = modelId.split("/");
+  return parts[parts.length - 1];
+}
+
+function buildCompatibleAlias(prefix: string, modelId: string): string {
+  return `${prefix}-${getBaseModelAlias(modelId)}`;
+}
+
 function getProtoSlice(
   c: CompatModelRow | undefined,
   o: CompatModelRow | undefined,
@@ -230,6 +239,7 @@ interface CustomModelsSectionProps {
 
 interface CompatibleModelsSectionProps {
   providerStorageAlias: string;
+  providerAliasPrefix: string;
   providerDisplayAlias: string;
   modelAliases: Record<string, string>;
   copied?: string;
@@ -575,6 +585,9 @@ export default function ProviderDetailPage() {
   });
 
   const providerStorageAlias = isCompatible ? providerId : providerAlias;
+  const providerAliasPrefix = isCompatible
+    ? providerNode?.prefix?.trim() || providerStorageAlias
+    : providerAlias;
   const providerDisplayAlias = isCompatible
     ? providerNode?.prefix || providerDisplayName
     : providerAlias;
@@ -1310,6 +1323,7 @@ export default function ProviderDetailPage() {
       return (
         <CompatibleModelsSection
           providerStorageAlias={providerStorageAlias}
+          providerAliasPrefix={providerAliasPrefix}
           providerDisplayAlias={providerDisplayAlias}
           modelAliases={modelAliases}
           copied={copied}
@@ -2756,6 +2770,7 @@ CustomModelsSection.propTypes = {
 
 function CompatibleModelsSection({
   providerStorageAlias,
+  providerAliasPrefix,
   providerDisplayAlias,
   modelAliases,
   copied,
@@ -2787,15 +2802,8 @@ function CompatibleModelsSection({
     alias,
   }));
 
-  const generateDefaultAlias = (modelId) => {
-    const parts = modelId.split("/");
-    return parts[parts.length - 1];
-  };
-
   const resolveAlias = (modelId) => {
-    const baseAlias = generateDefaultAlias(modelId);
-    if (!modelAliases[baseAlias]) return baseAlias;
-    const prefixedAlias = `${providerDisplayAlias}-${baseAlias}`;
+    const prefixedAlias = buildCompatibleAlias(providerAliasPrefix, modelId);
     if (!modelAliases[prefixedAlias]) return prefixedAlias;
     return null;
   };
@@ -2993,6 +3001,7 @@ function CompatibleModelsSection({
 
 CompatibleModelsSection.propTypes = {
   providerStorageAlias: PropTypes.string.isRequired,
+  providerAliasPrefix: PropTypes.string.isRequired,
   providerDisplayAlias: PropTypes.string.isRequired,
   modelAliases: PropTypes.object.isRequired,
   copied: PropTypes.string,

@@ -1,4 +1,5 @@
 import { getModelsByProviderId } from "@omniroute/open-sse/config/providerModels.ts";
+import type { BadgeVariant } from "@/shared/components/Badge";
 import { safePercentage } from "@/shared/utils/formatting";
 import {
   isAnthropicCompatibleProvider,
@@ -60,7 +61,7 @@ export type ProviderMeta = {
 export type NormalizedPlanTier = {
   key: string;
   label: string;
-  variant: string;
+  variant: BadgeVariant;
   rank: number;
   raw: string | null;
 };

@@ -4,6 +4,8 @@ import { cn } from "@/shared/utils/cn";
 
 const variants = {
   default: "bg-black/5 dark:bg-white/10 text-text-muted",
+  secondary:
+    "border border-black/10 bg-black/[0.03] text-text-main dark:border-white/10 dark:bg-white/[0.08]",
   primary: "bg-primary/10 text-primary",
   success: "bg-green-500/10 text-green-600 dark:text-green-400",
   warning: "bg-yellow-500/10 text-yellow-600 dark:text-yellow-400",
@@ -17,10 +19,23 @@ const sizes = {
   lg: "px-3 py-1.5 text-sm",
 };
 
+const dotVariants = {
+  default: "bg-gray-500",
+  secondary: "bg-black/45 dark:bg-white/55",
+  primary: "bg-primary",
+  success: "bg-green-500",
+  warning: "bg-yellow-500",
+  error: "bg-red-500",
+  info: "bg-blue-500",
+} as const;
+
+export type BadgeVariant = keyof typeof variants;
+export type BadgeSize = keyof typeof sizes;
+
 interface BadgeProps {
   children?: React.ReactNode;
-  variant?: keyof typeof variants;
-  size?: keyof typeof sizes;
+  variant?: BadgeVariant;
+  size?: BadgeSize;
   dot?: boolean;
   icon?: React.ReactNode;
   className?: string;
@@ -34,11 +49,14 @@ export default function Badge({
   icon,
   className,
 }: BadgeProps) {
+  const resolvedVariant =
+    variant && Object.prototype.hasOwnProperty.call(variants, variant) ? variant : "default";
+
   return (
     <span
       className={cn(
         "inline-flex items-center gap-1.5 rounded-full font-semibold",
-        variants[variant],
+        variants[resolvedVariant],
         sizes[size],
         className
       )}
@@ -46,15 +64,7 @@ export default function Badge({
       {dot && (
         <span
           aria-hidden="true"
-          className={cn(
-            "size-1.5 rounded-full",
-            variant === "success" && "bg-green-500",
-            variant === "warning" && "bg-yellow-500",
-            variant === "error" && "bg-red-500",
-            variant === "info" && "bg-blue-500",
-            variant === "primary" && "bg-primary",
-            variant === "default" && "bg-gray-500"
-          )}
+          className={cn("size-1.5 rounded-full", dotVariants[resolvedVariant])}
         />
       )}
       {icon && (

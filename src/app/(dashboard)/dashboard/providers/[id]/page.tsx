@@ -72,6 +72,18 @@ function buildCompatibleAlias(prefix: string, modelId: string): string {
   return `${prefix}-${getBaseModelAlias(modelId)}`;
 }
 
+const IMPORTED_MODEL_NAME_MAX_LENGTH = 240;
+
+function getImportedModelDisplayName(model: any, modelId: string): string {
+  const candidates = [model?.name, model?.displayName, model?.display_name, model?.model];
+  for (const candidate of candidates) {
+    if (typeof candidate !== "string") continue;
+    const trimmed = candidate.trim();
+    if (trimmed) return trimmed.slice(0, IMPORTED_MODEL_NAME_MAX_LENGTH);
+  }
+  return modelId.slice(0, IMPORTED_MODEL_NAME_MAX_LENGTH);
+}
+
 function isCompatibleAliasOwnedByProvider(alias: string, prefix: string): boolean {
   return alias.startsWith(`${prefix}-`);
 }
@@ -1099,7 +1111,7 @@ export default function ProviderDetailPage() {
           body: JSON.stringify({
             provider: providerId,
             modelId,
-            modelName: model.name || modelId,
+            modelName: getImportedModelDisplayName(model, modelId),
             source: "imported",
           }),
         });
@@ -2903,7 +2915,7 @@ function CompatibleModelsSection({
             body: JSON.stringify({
               provider: providerStorageAlias,
               modelId,
-              modelName: model.name || modelId,
+              modelName: getImportedModelDisplayName(model, modelId),
               source: "imported",
             }),
           });

@@ -166,6 +166,76 @@ function getKeyValue(row: unknown): { key: string | null; value: string | null }
   };
 }
 
+const DEFAULT_CUSTOM_MODEL_API_FORMAT = "chat-completions";
+const DEFAULT_CUSTOM_MODEL_ENDPOINTS = ["chat"] as const;
+const CUSTOM_MODEL_SUPPORTED_ENDPOINTS = new Set(["chat", "embeddings", "images", "audio"]);
+
+type CustomModelRecord = JsonRecord & {
+  id: string;
+  name: string;
+  source: string;
+  apiFormat: "chat-completions" | "responses";
+  supportedEndpoints: string[];
+};
+
+function normalizeSupportedEndpoints(value: unknown): string[] {
+  if (!Array.isArray(value)) return [...DEFAULT_CUSTOM_MODEL_ENDPOINTS];
+  const filtered = value.filter(
+    (entry): entry is string =>
+      typeof entry === "string" && CUSTOM_MODEL_SUPPORTED_ENDPOINTS.has(entry)
+  );
+  return filtered.length > 0 ? Array.from(new Set(filtered)) : [...DEFAULT_CUSTOM_MODEL_ENDPOINTS];
+}
+
+function normalizeCustomModelEntry(value: unknown, fallbackId?: string): CustomModelRecord | null {
+  const record = asRecord(value);
+  const id =
+    typeof record.id === "string" && record.id.trim().length > 0
+      ? record.id.trim()
+      : typeof fallbackId === "string" && fallbackId.trim().length > 0
+        ? fallbackId.trim()
+        : "";
+
+  if (!id) return null;
+
+  const name = typeof record.name === "string" && record.name.trim().length > 0 ? record.name : id;
+  const source =
+    typeof record.source === "string" && record.source.trim().length > 0 ? record.source : "manual";
+  const apiFormat =
+    record.apiFormat === "responses" ? "responses" : DEFAULT_CUSTOM_MODEL_API_FORMAT;
+
+  return {
+    ...record,
+    id,
+    name,
+    source,
+    apiFormat,
+    supportedEndpoints: normalizeSupportedEndpoints(record.supportedEndpoints),
+  };
+}
+
+function parseCustomModelsValue(value: string | null): CustomModelRecord[] {
+  if (!value) return [];
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    const entries = Array.isArray(parsed)
+      ? parsed.map((entry) => [undefined, entry] as const)
+      : Object.entries(asRecord(parsed));
+    const models = new Map<string, CustomModelRecord>();
+
+    for (const [fallbackId, entry] of entries) {
+      const normalized = normalizeCustomModelEntry(entry, fallbackId);
+      if (!normalized) continue;
+      models.set(normalized.id, normalized);
+    }
+
+    return [...models.values()];
+  } catch {
+    return [];
+  }
+}
+
 // ──────────────── Model Aliases ────────────────
 
 export async function getModelAliases() {
@@ -234,7 +304,7 @@ export async function getCustomModels(providerId) {
       .prepare("SELECT value FROM key_value WHERE namespace = 'customModels' AND key = ?")
       .get(providerId);
     const value = getKeyValue(row).value;
-    return value ? JSON.parse(value) : [];
+    return parseCustomModelsValue(value);
   }
   const rows = db
     .prepare("SELECT key, value FROM key_value WHERE namespace = 'customModels'")
@@ -243,7 +313,7 @@ export async function getCustomModels(providerId) {
   for (const row of rows) {
     const { key, value } = getKeyValue(row);
     if (!key || value === null) continue;
-    result[key] = JSON.parse(value);
+    result[key] = parseCustomModelsValue(value);
   }
   return result;
 }
@@ -257,7 +327,7 @@ export async function getAllCustomModels() {
   for (const row of rows) {
     const { key, value } = getKeyValue(row);
     if (!key || value === null) continue;
-    result[key] = JSON.parse(value);
+    result[key] = parseCustomModelsValue(value);
   }
   return result;
 }
@@ -275,7 +345,7 @@ export async function addCustomModel(
     .prepare("SELECT value FROM key_value WHERE namespace = 'customModels' AND key = ?")
     .get(providerId);
   const value = getKeyValue(row).value;
-  const models = value ? JSON.parse(value) : [];
+  const models = parseCustomModelsValue(value);
 
   const exists = models.find((m) => m.id === modelId);
   if (exists) return exists;
@@ -304,7 +374,7 @@ export async function removeCustomModel(providerId, modelId) {
 
   const value = getKeyValue(row).value;
   if (!value) return false;
-  const models = JSON.parse(value);
+  const models = parseCustomModelsValue(value);
   const before = models.length;
   const filtered = models.filter((m) => m.id !== modelId);
 
@@ -340,7 +410,7 @@ export async function updateCustomModel(
   const value = getKeyValue(row).value;
   if (!value) return null;
 
-  const models = JSON.parse(value);
+  const models = parseCustomModelsValue(value);
   const index = models.findIndex((m) => m.id === modelId);
   if (index === -1) return null;
 
@@ -408,12 +478,8 @@ function getCustomModelRow(providerId: string, modelId: string): JsonRecord | nu
   const value = getKeyValue(row).value;
   if (!value) return null;
   try {
-    const models = JSON.parse(value) as unknown;
-    if (!Array.isArray(models)) return null;
-    const m = models.find((x: unknown) => {
-      if (!x || typeof x !== "object" || Array.isArray(x)) return false;
-      return (x as { id?: string }).id === modelId;
-    }) as JsonRecord | undefined;
+    const models = parseCustomModelsValue(value);
+    const m = models.find((x) => x.id === modelId) as JsonRecord | undefined;
     return m ?? null;
   } catch {
     return null;

@@ -738,7 +738,7 @@ export default function ProviderDetailPage() {
         await fetchAliases();
       } else {
         const data = await res.json();
-        alert(data.error || t("failedSetAlias"));
+        alert(data?.error?.message || data?.error || t("failedSetAlias"));
       }
     } catch (error) {
       console.log("Error setting alias:", error);

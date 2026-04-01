@@ -13,7 +13,7 @@ import {
   isOpenAICompatibleProvider,
   isAnthropicCompatibleProvider,
 } from "@/shared/constants/providers";
-import { isAuthenticated } from "@/shared/utils/apiAuth";
+import { requireManagementAuth } from "@/lib/api/requireManagementAuth";
 import { providerModelMutationSchema } from "@/shared/validation/schemas";
 import { isValidationFailure, validateBody } from "@/shared/validation/helpers";
 
@@ -23,13 +23,8 @@ import { isValidationFailure, validateBody } from "@/shared/validation/helpers";
  */
 export async function GET(request) {
   try {
-    // Require authentication for security
-    if (!(await isAuthenticated(request))) {
-      return Response.json(
-        { error: { message: "Authentication required", type: "invalid_api_key" } },
-        { status: 401 }
-      );
-    }
+    const authError = await requireManagementAuth(request);
+    if (authError) return authError;
 
     const { searchParams } = new URL(request.url);
     const provider = searchParams.get("provider");
@@ -62,13 +57,8 @@ export async function POST(request) {
   }
 
   try {
-    // Require authentication for security
-    if (!(await isAuthenticated(request))) {
-      return Response.json(
-        { error: { message: "Authentication required", type: "invalid_api_key" } },
-        { status: 401 }
-      );
-    }
+    const authError = await requireManagementAuth(request);
+    if (authError) return authError;
 
     const validation = validateBody(providerModelMutationSchema, rawBody);
     if (isValidationFailure(validation)) {
@@ -110,12 +100,8 @@ export async function PUT(request) {
   }
 
   try {
-    if (!(await isAuthenticated(request))) {
-      return Response.json(
-        { error: { message: "Authentication required", type: "invalid_api_key" } },
-        { status: 401 }
-      );
-    }
+    const authError = await requireManagementAuth(request);
+    if (authError) return authError;
 
     const validation = validateBody(providerModelMutationSchema, rawBody);
     if (isValidationFailure(validation)) {
@@ -220,13 +206,8 @@ export async function PUT(request) {
  */
 export async function DELETE(request) {
   try {
-    // Require authentication for security
-    if (!(await isAuthenticated(request))) {
-      return Response.json(
-        { error: { message: "Authentication required", type: "invalid_api_key" } },
-        { status: 401 }
-      );
-    }
+    const authError = await requireManagementAuth(request);
+    if (authError) return authError;
 
     const { searchParams } = new URL(request.url);
     const provider = searchParams.get("provider");

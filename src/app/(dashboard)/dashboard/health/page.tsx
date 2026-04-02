@@ -55,6 +55,8 @@ export default function HealthPage() {
   const [signatureCache, setSignatureCache] = useState(null);
   const [providerNodes, setProviderNodes] = useState([]);
   const [resetting, setResetting] = useState(false);
+  const cacheEntries = cache?.totalEntries ?? (cache?.memoryEntries || 0) + (cache?.dbEntries || 0);
+  const cacheHitRate = Number(cache?.hitRate ?? 0);
 
   const fetchHealth = useCallback(async () => {
     try {
@@ -73,12 +75,12 @@ export default function HealthPage() {
   const fetchExtras = useCallback(async () => {
     const results = await Promise.allSettled([
       fetch("/api/telemetry/summary").then((r) => r.json()),
-      fetch("/api/cache/stats").then((r) => r.json()),
+      fetch("/api/cache").then((r) => r.json()),
       fetch("/api/rate-limits").then((r) => r.json()),
       fetch("/api/provider-nodes").then((r) => r.json()),
     ]);
     if (results[0].status === "fulfilled") setTelemetry(results[0].value);
-    if (results[1].status === "fulfilled") setCache(results[1].value);
+    if (results[1].status === "fulfilled") setCache(results[1].value?.semanticCache || null);
     if (results[2].status === "fulfilled" && results[2].value.cacheStats) {
       setSignatureCache(results[2].value.cacheStats);
     }
@@ -310,13 +312,11 @@ export default function HealthPage() {
             <div className="space-y-2 text-sm">
               <div className="flex justify-between">
                 <span className="text-text-muted">{t("entries")}</span>
-                <span className="font-mono">
-                  {cache.size}/{cache.maxSize}
-                </span>
+                <span className="font-mono">{cacheEntries}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-text-muted">{t("hitRate")}</span>
-                <span className="font-mono">{cache.hitRate?.toFixed(1) ?? 0}%</span>
+                <span className="font-mono">{cacheHitRate.toFixed(1)}%</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-text-muted">{t("hitsMisses")}</span>

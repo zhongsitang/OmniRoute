@@ -362,12 +362,17 @@ export function getCacheStats() {
   }
 
   const total = stats.hits + stats.misses;
+  const hitRate = total > 0 ? (stats.hits / total) * 100 : 0;
   return {
     memoryEntries: memStats.size,
+    memoryMaxEntries: memStats.maxSize,
+    memoryBytes: memStats.bytes,
+    memoryMaxBytes: memStats.maxBytes,
     dbEntries: dbSize,
+    totalEntries: memStats.size + dbSize,
     hits: stats.hits,
     misses: stats.misses,
-    hitRate: total > 0 ? ((stats.hits / total) * 100).toFixed(1) : "0.0",
+    hitRate,
     tokensSaved: stats.tokensSaved,
   };
 }

@@ -1,11 +1,17 @@
 import { NextResponse } from "next/server";
-import { getPromptCache } from "@/lib/cacheLayer";
+import { getCacheStats, clearCache, cleanExpiredEntries } from "@/lib/semanticCache";
 
 export async function GET() {
   try {
-    const cache = getPromptCache();
-    const stats = (cache as any).getStats();
-    return NextResponse.json(stats);
+    const stats = getCacheStats();
+    return NextResponse.json({
+      ...stats,
+      // Backward-compatible aliases for older dashboard cards.
+      size: stats.totalEntries,
+      maxSize: stats.memoryMaxEntries,
+      bytes: stats.memoryBytes,
+      maxBytes: stats.memoryMaxBytes,
+    });
   } catch (error) {
     return NextResponse.json({ error: (error as any).message }, { status: 500 });
   }
@@ -13,9 +19,13 @@ export async function GET() {
 
 export async function DELETE() {
   try {
-    const cache = getPromptCache();
-    (cache as any).clear();
-    return NextResponse.json({ success: true, message: "Cache cleared" });
+    const cleaned = cleanExpiredEntries();
+    clearCache();
+    return NextResponse.json({
+      success: true,
+      expiredRemoved: cleaned,
+      message: "Semantic cache cleared",
+    });
   } catch (error) {
     return NextResponse.json({ error: (error as any).message }, { status: 500 });
   }

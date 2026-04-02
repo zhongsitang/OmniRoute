@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCacheStats, clearCache, cleanExpiredEntries } from "@/lib/semanticCache";
-import { getIdempotencyStats } from "@/lib/idempotencyLayer";
+import { clearIdempotency, getIdempotencyStats } from "@/lib/idempotencyLayer";
 
 /**
  * GET /api/cache — Cache statistics
@@ -24,9 +24,17 @@ export async function GET() {
  */
 export async function DELETE() {
   try {
-    clearCache();
     const cleaned = cleanExpiredEntries();
-    return NextResponse.json({ ok: true, expiredRemoved: cleaned });
+    clearCache();
+    clearIdempotency();
+    return NextResponse.json({
+      ok: true,
+      expiredRemoved: cleaned,
+      cleared: {
+        semanticCache: true,
+        idempotency: true,
+      },
+    });
   } catch (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }

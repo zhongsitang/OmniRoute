@@ -10,15 +10,17 @@ export default function BudgetTelemetryCards() {
   const [telemetry, setTelemetry] = useState(null);
   const [cache, setCache] = useState(null);
   const [policies, setPolicies] = useState(null);
+  const cacheEntries = cache?.totalEntries ?? (cache?.memoryEntries || 0) + (cache?.dbEntries || 0);
+  const cacheHitRate = Number(cache?.hitRate ?? 0);
 
   useEffect(() => {
     Promise.allSettled([
       fetch("/api/telemetry/summary").then((r) => r.json()),
-      fetch("/api/cache/stats").then((r) => r.json()),
+      fetch("/api/cache").then((r) => r.json()),
       fetch("/api/policies").then((r) => r.json()),
     ]).then(([t, c, p]) => {
       if (t.status === "fulfilled") setTelemetry(t.value);
-      if (c.status === "fulfilled") setCache(c.value);
+      if (c.status === "fulfilled") setCache(c.value?.semanticCache || null);
       if (p.status === "fulfilled") setPolicies(p.value);
     });
   }, []);
@@ -67,13 +69,11 @@ export default function BudgetTelemetryCards() {
           <div className="space-y-2 text-sm">
             <div className="flex justify-between">
               <span className="text-text-muted">{t("entries")}</span>
-              <span className="font-mono">
-                {cache.size}/{cache.maxSize}
-              </span>
+              <span className="font-mono">{cacheEntries}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-text-muted">{t("hitRate")}</span>
-              <span className="font-mono">{cache.hitRate?.toFixed(1) ?? 0}%</span>
+              <span className="font-mono">{cacheHitRate.toFixed(1)}%</span>
             </div>
             <div className="flex justify-between">
               <span className="text-text-muted">{t("hitsMisses")}</span>

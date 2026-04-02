@@ -9,10 +9,13 @@ export default function CacheStatsCard() {
   const [flushing, setFlushing] = useState(false);
   const t = useTranslations("settings");
 
+  const totalEntries = cache?.totalEntries ?? (cache?.memoryEntries || 0) + (cache?.dbEntries || 0);
+  const hitRate = Number(cache?.hitRate ?? 0);
+
   const fetchStats = () => {
-    fetch("/api/cache/stats")
+    fetch("/api/cache")
       .then((r) => r.json())
-      .then(setCache)
+      .then((data) => setCache(data?.semanticCache ?? null))
       .catch(() => {});
   };
 
@@ -21,7 +24,7 @@ export default function CacheStatsCard() {
   const handleFlush = async () => {
     setFlushing(true);
     try {
-      await fetch("/api/cache/stats", { method: "DELETE" });
+      await fetch("/api/cache", { method: "DELETE" });
       fetchStats();
     } finally {
       setFlushing(false);
@@ -47,22 +50,20 @@ export default function CacheStatsCard() {
       {cache ? (
         <div className="grid grid-cols-2 gap-4 text-sm">
           <div>
-            <p className="text-text-muted">{t("size")}</p>
-            <p className="font-mono text-lg text-text-main">
-              {cache.size}/{cache.maxSize}
-            </p>
+            <p className="text-text-muted">{t("cacheEntries")}</p>
+            <p className="font-mono text-lg text-text-main">{totalEntries}</p>
           </div>
           <div>
             <p className="text-text-muted">{t("hitRate")}</p>
-            <p className="font-mono text-lg text-text-main">{cache.hitRate?.toFixed(1) ?? 0}%</p>
+            <p className="font-mono text-lg text-text-main">{hitRate.toFixed(1)}%</p>
           </div>
           <div>
-            <p className="text-text-muted">{t("hits")}</p>
+            <p className="text-text-muted">{t("cacheHits")}</p>
             <p className="font-mono text-text-main">{cache.hits ?? 0}</p>
           </div>
           <div>
-            <p className="text-text-muted">{t("evictions")}</p>
-            <p className="font-mono text-text-main">{cache.evictions ?? 0}</p>
+            <p className="text-text-muted">{t("cacheMisses")}</p>
+            <p className="font-mono text-text-main">{cache.misses ?? 0}</p>
           </div>
         </div>
       ) : (

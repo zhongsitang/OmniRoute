@@ -9,7 +9,11 @@ import { translateRequest } from "../../open-sse/translator/index.ts";
 import { CODEX_DEFAULT_INSTRUCTIONS } from "../../open-sse/config/codexInstructions.ts";
 import { GithubExecutor } from "../../open-sse/executors/github.ts";
 import { DefaultExecutor } from "../../open-sse/executors/default.ts";
-import { CodexExecutor, setDefaultFastServiceTierEnabled } from "../../open-sse/executors/codex.ts";
+import {
+  CodexExecutor,
+  setCodexServiceTierConfig,
+  setDefaultFastServiceTierEnabled,
+} from "../../open-sse/executors/codex.ts";
 import { translateNonStreamingResponse } from "../../open-sse/handlers/responseTranslator.ts";
 import { extractUsageFromResponse } from "../../open-sse/handlers/usageExtractor.ts";
 import { parseSSEToResponsesOutput } from "../../open-sse/handlers/sseParser.ts";
@@ -156,6 +160,38 @@ test("CodexExecutor can force fast service tier from settings", () => {
     assert.equal(transformed.service_tier, "priority");
   } finally {
     setDefaultFastServiceTierEnabled(false);
+  }
+});
+
+test("CodexExecutor can inject custom service tier from settings", () => {
+  setCodexServiceTierConfig({ mode: "inject", value: "flex" });
+
+  try {
+    const executor = new CodexExecutor();
+    const transformed = executor.transformRequest(
+      "gpt-5.1-codex",
+      { model: "gpt-5.1-codex", input: [] },
+      true
+    );
+    assert.equal(transformed.service_tier, "flex");
+  } finally {
+    setCodexServiceTierConfig({ mode: "passthrough", value: "priority" });
+  }
+});
+
+test("CodexExecutor passthrough mode does not inject service tier", () => {
+  setCodexServiceTierConfig({ mode: "passthrough", value: "flex" });
+
+  try {
+    const executor = new CodexExecutor();
+    const transformed = executor.transformRequest(
+      "gpt-5.1-codex",
+      { model: "gpt-5.1-codex", input: [] },
+      true
+    );
+    assert.equal("service_tier" in transformed, false);
+  } finally {
+    setCodexServiceTierConfig({ mode: "passthrough", value: "priority" });
   }
 });
 

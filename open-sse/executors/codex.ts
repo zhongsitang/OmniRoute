@@ -7,7 +7,22 @@ import { CODEX_FAST_SERVICE_TIER, normalizeServiceTier } from "@/lib/usage/servi
 // Ordered list of effort levels from lowest to highest
 const EFFORT_ORDER = ["none", "low", "medium", "high", "xhigh"] as const;
 type EffortLevel = (typeof EFFORT_ORDER)[number];
-let defaultFastServiceTierEnabled = false;
+
+type CodexServiceTierMode = "passthrough" | "inject";
+
+export interface CodexServiceTierConfig {
+  mode: CodexServiceTierMode;
+  value: string;
+}
+
+const DEFAULT_CODEX_SERVICE_TIER_CONFIG: CodexServiceTierConfig = {
+  mode: "passthrough",
+  value: CODEX_FAST_SERVICE_TIER,
+};
+
+let defaultCodexServiceTierConfig: CodexServiceTierConfig = {
+  ...DEFAULT_CODEX_SERVICE_TIER_CONFIG,
+};
 
 function normalizeNativeResponsesInputItem(item: unknown): unknown {
   if (typeof item === "string") {
@@ -66,8 +81,51 @@ function normalizeServiceTierValue(value: unknown): string | undefined {
   return normalizeServiceTier(value) ?? undefined;
 }
 
+export function normalizeCodexServiceTierConfig(value: unknown): CodexServiceTierConfig {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const record = value as Record<string, unknown>;
+
+    // Backward compatibility for historical `{ enabled: boolean }` settings.
+    if (typeof record.enabled === "boolean") {
+      return {
+        mode: record.enabled ? "inject" : "passthrough",
+        value: CODEX_FAST_SERVICE_TIER,
+      };
+    }
+
+    const rawMode = typeof record.mode === "string" ? record.mode.trim().toLowerCase() : "";
+    const normalizedMode: CodexServiceTierMode = rawMode === "inject" ? "inject" : "passthrough";
+    const normalizedValue =
+      normalizeServiceTierValue(record.value) ?? DEFAULT_CODEX_SERVICE_TIER_CONFIG.value;
+
+    return {
+      mode: normalizedMode,
+      value: normalizedValue,
+    };
+  }
+
+  return { ...DEFAULT_CODEX_SERVICE_TIER_CONFIG };
+}
+
+export function setCodexServiceTierConfig(value: unknown): CodexServiceTierConfig {
+  const normalized = normalizeCodexServiceTierConfig(value);
+  defaultCodexServiceTierConfig = normalized;
+  return normalized;
+}
+
+export function getCodexServiceTierConfig(): CodexServiceTierConfig {
+  return { ...defaultCodexServiceTierConfig };
+}
+
+/**
+ * Backward-compatible wrapper for older callers.
+ * Prefer `setCodexServiceTierConfig({ mode, value })` for new code.
+ */
 export function setDefaultFastServiceTierEnabled(enabled: boolean): void {
-  defaultFastServiceTierEnabled = enabled;
+  setCodexServiceTierConfig({
+    mode: enabled ? "inject" : "passthrough",
+    value: CODEX_FAST_SERVICE_TIER,
+  });
 }
 
 /**
@@ -188,8 +246,10 @@ export class CodexExecutor extends BaseExecutor {
     const requestServiceTier = normalizeServiceTierValue(body.service_tier);
     if (requestServiceTier) {
       body.service_tier = requestServiceTier;
-    } else if (defaultFastServiceTierEnabled) {
-      body.service_tier = CODEX_FAST_SERVICE_TIER;
+    } else if (defaultCodexServiceTierConfig.mode === "inject") {
+      body.service_tier = defaultCodexServiceTierConfig.value;
+    } else {
+      delete body.service_tier;
     }
 
     // Codex /responses passthrough still needs a system prompt because upstream

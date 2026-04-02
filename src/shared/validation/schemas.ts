@@ -567,11 +567,32 @@ export const updateThinkingBudgetSchema = z
     }
   });
 
-export const updateCodexServiceTierSchema = z
+const codexServiceTierConfigSchema = z
+  .object({
+    mode: z.enum(["passthrough", "inject"]),
+    value: z.string().trim().min(1).max(64).optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.mode === "inject" && !value.value) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "value is required when mode=inject",
+        path: ["value"],
+      });
+    }
+  });
+
+const legacyCodexServiceTierSchema = z
   .object({
     enabled: z.boolean(),
   })
   .strict();
+
+export const updateCodexServiceTierSchema = z.union([
+  codexServiceTierConfigSchema,
+  legacyCodexServiceTierSchema,
+]);
 
 const ipFilterModeSchema = z.enum(["blacklist", "whitelist"]);
 const tempBanSchema = z.object({

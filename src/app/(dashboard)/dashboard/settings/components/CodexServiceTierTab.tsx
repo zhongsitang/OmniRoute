@@ -19,8 +19,7 @@ function normalizeMode(value: unknown): ServiceTierMode {
 }
 
 export default function CodexServiceTierTab() {
-  const [currentPolicy, setCurrentPolicy] = useState<ServiceTierPolicy>(DEFAULT_POLICY);
-  const [mode, setMode] = useState<ServiceTierMode>(DEFAULT_POLICY.mode);
+  const [policy, setPolicy] = useState<ServiceTierPolicy>(DEFAULT_POLICY);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState<"" | "saved" | "error">("");
@@ -30,18 +29,17 @@ export default function CodexServiceTierTab() {
       .then((res) => res.json())
       .then((data) => {
         const nextPolicy = { mode: normalizeMode(data?.mode) };
-        setCurrentPolicy(nextPolicy);
-        setMode(nextPolicy.mode);
+        setPolicy(nextPolicy);
         setLoading(false);
       })
       .catch(() => setLoading(false));
   }, []);
 
-  const isDirty = mode !== currentPolicy.mode;
+  const saveMode = async (nextMode: ServiceTierMode) => {
+    if (loading || saving || nextMode === policy.mode) return;
 
-  const save = async () => {
-    if (!isDirty) return;
-
+    const previousPolicy = policy;
+    setPolicy({ mode: nextMode });
     setSaving(true);
     setStatus("");
 
@@ -49,20 +47,20 @@ export default function CodexServiceTierTab() {
       const res = await fetch("/api/settings/codex-service-tier", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode }),
+        body: JSON.stringify({ mode: nextMode }),
       });
 
       if (res.ok) {
         const data = await res.json();
-        const nextPolicy = { mode: normalizeMode(data?.mode) };
-        setCurrentPolicy(nextPolicy);
-        setMode(nextPolicy.mode);
+        setPolicy({ mode: normalizeMode(data?.mode) });
         setStatus("saved");
         setTimeout(() => setStatus(""), 2000);
       } else {
+        setPolicy(previousPolicy);
         setStatus("error");
       }
     } catch {
+      setPolicy(previousPolicy);
       setStatus("error");
     } finally {
       setSaving(false);
@@ -101,23 +99,28 @@ export default function CodexServiceTierTab() {
       <div className="grid grid-cols-1 gap-2 mb-4">
         <button
           type="button"
-          onClick={() => setMode("passthrough")}
+          onClick={() => saveMode("passthrough")}
           disabled={loading || saving}
+          aria-pressed={policy.mode === "passthrough"}
           className={`flex items-start gap-3 p-3 rounded-lg border text-left transition-all ${
-            mode === "passthrough"
+            policy.mode === "passthrough"
               ? "border-sky-500/50 bg-sky-500/5 ring-1 ring-sky-500/20"
               : "border-border/50 hover:border-border hover:bg-surface/30"
           }`}
         >
           <span
             className={`material-symbols-outlined text-[20px] mt-0.5 ${
-              mode === "passthrough" ? "text-sky-500" : "text-text-muted"
+              policy.mode === "passthrough" ? "text-sky-500" : "text-text-muted"
             }`}
           >
             sync_alt
           </span>
           <div className="min-w-0">
-            <p className={`text-sm font-medium ${mode === "passthrough" ? "text-sky-400" : ""}`}>
+            <p
+              className={`text-sm font-medium ${
+                policy.mode === "passthrough" ? "text-sky-400" : ""
+              }`}
+            >
               Passthrough
             </p>
             <p className="text-xs text-text-muted mt-0.5 leading-relaxed">
@@ -128,23 +131,24 @@ export default function CodexServiceTierTab() {
 
         <button
           type="button"
-          onClick={() => setMode("omit")}
+          onClick={() => saveMode("omit")}
           disabled={loading || saving}
+          aria-pressed={policy.mode === "omit"}
           className={`flex items-start gap-3 p-3 rounded-lg border text-left transition-all ${
-            mode === "omit"
+            policy.mode === "omit"
               ? "border-sky-500/50 bg-sky-500/5 ring-1 ring-sky-500/20"
               : "border-border/50 hover:border-border hover:bg-surface/30"
           }`}
         >
           <span
             className={`material-symbols-outlined text-[20px] mt-0.5 ${
-              mode === "omit" ? "text-sky-500" : "text-text-muted"
+              policy.mode === "omit" ? "text-sky-500" : "text-text-muted"
             }`}
           >
             remove_circle
           </span>
           <div className="min-w-0">
-            <p className={`text-sm font-medium ${mode === "omit" ? "text-sky-400" : ""}`}>
+            <p className={`text-sm font-medium ${policy.mode === "omit" ? "text-sky-400" : ""}`}>
               Remove service_tier
             </p>
             <p className="text-xs text-text-muted mt-0.5 leading-relaxed">
@@ -155,23 +159,26 @@ export default function CodexServiceTierTab() {
 
         <button
           type="button"
-          onClick={() => setMode("priority")}
+          onClick={() => saveMode("priority")}
           disabled={loading || saving}
+          aria-pressed={policy.mode === "priority"}
           className={`flex items-start gap-3 p-3 rounded-lg border text-left transition-all ${
-            mode === "priority"
+            policy.mode === "priority"
               ? "border-sky-500/50 bg-sky-500/5 ring-1 ring-sky-500/20"
               : "border-border/50 hover:border-border hover:bg-surface/30"
           }`}
         >
           <span
             className={`material-symbols-outlined text-[20px] mt-0.5 ${
-              mode === "priority" ? "text-sky-500" : "text-text-muted"
+              policy.mode === "priority" ? "text-sky-500" : "text-text-muted"
             }`}
           >
             bolt
           </span>
           <div className="min-w-0">
-            <p className={`text-sm font-medium ${mode === "priority" ? "text-sky-400" : ""}`}>
+            <p
+              className={`text-sm font-medium ${policy.mode === "priority" ? "text-sky-400" : ""}`}
+            >
               Force priority
             </p>
             <p className="text-xs text-text-muted mt-0.5 leading-relaxed">
@@ -186,18 +193,6 @@ export default function CodexServiceTierTab() {
           Passthrough can still fail if the upstream rejects the client-provided tier. Remove
           `service_tier` is the safest non-priority option for Codex.
         </p>
-      </div>
-
-      <div className="mt-4 flex items-center justify-between gap-3">
-        <p className="text-xs text-text-muted">Current: {currentPolicy.mode}</p>
-        <button
-          type="button"
-          onClick={save}
-          disabled={loading || saving || !isDirty}
-          className="px-3 py-2 rounded-md text-sm font-medium bg-sky-500 text-white hover:bg-sky-400 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-        >
-          {saving ? "Saving..." : "Save"}
-        </button>
       </div>
     </Card>
   );

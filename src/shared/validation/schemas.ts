@@ -567,23 +567,13 @@ export const updateThinkingBudgetSchema = z
     }
   });
 
-const codexServiceTierConfigSchema = z
+const serviceTierPolicySchema = z
   .object({
-    mode: z.enum(["passthrough", "override"]),
-    value: z.string().trim().min(1).max(64).optional(),
+    mode: z.enum(["passthrough", "omit", "priority"]),
   })
-  .strict()
-  .superRefine((value, ctx) => {
-    if (value.mode === "override" && !value.value) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "value is required when mode=override",
-        path: ["value"],
-      });
-    }
-  });
+  .strict();
 
-export const updateCodexServiceTierSchema = codexServiceTierConfigSchema;
+export const updateServiceTierPolicySchema = serviceTierPolicySchema;
 
 const ipFilterModeSchema = z.enum(["blacklist", "whitelist"]);
 const tempBanSchema = z.object({

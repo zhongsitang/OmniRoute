@@ -9,11 +9,11 @@ import { translateRequest } from "../../open-sse/translator/index.ts";
 import { CODEX_DEFAULT_INSTRUCTIONS } from "../../open-sse/config/codexInstructions.ts";
 import { GithubExecutor } from "../../open-sse/executors/github.ts";
 import { DefaultExecutor } from "../../open-sse/executors/default.ts";
+import { CodexExecutor } from "../../open-sse/executors/codex.ts";
 import {
-  CodexExecutor,
-  setCodexServiceTierConfig,
-  setDefaultFastServiceTierEnabled,
-} from "../../open-sse/executors/codex.ts";
+  getServiceTierPolicy,
+  setServiceTierPolicy,
+} from "../../open-sse/executors/serviceTierPolicy.ts";
 import { translateNonStreamingResponse } from "../../open-sse/handlers/responseTranslator.ts";
 import { extractUsageFromResponse } from "../../open-sse/handlers/usageExtractor.ts";
 import { parseSSEToResponsesOutput } from "../../open-sse/handlers/sseParser.ts";
@@ -147,8 +147,8 @@ test("shouldUseNativeCodexPassthrough only enables responses-native Codex reques
   );
 });
 
-test("CodexExecutor can force fast service tier from settings", () => {
-  setDefaultFastServiceTierEnabled(true);
+test("CodexExecutor priority mode forces service tier", () => {
+  setServiceTierPolicy({ mode: "priority" });
 
   try {
     const executor = new CodexExecutor();
@@ -159,12 +159,12 @@ test("CodexExecutor can force fast service tier from settings", () => {
     );
     assert.equal(transformed.service_tier, "priority");
   } finally {
-    setDefaultFastServiceTierEnabled(false);
+    setServiceTierPolicy({ mode: "passthrough" });
   }
 });
 
-test("CodexExecutor can override service tier from settings", () => {
-  setCodexServiceTierConfig({ mode: "override", value: "flex" });
+test("CodexExecutor priority mode replaces explicit request service tier", () => {
+  setServiceTierPolicy({ mode: "priority" });
 
   try {
     const executor = new CodexExecutor();
@@ -173,14 +173,14 @@ test("CodexExecutor can override service tier from settings", () => {
       { model: "gpt-5.1-codex", input: [] },
       true
     );
-    assert.equal(transformed.service_tier, "flex");
+    assert.equal(transformed.service_tier, "priority");
   } finally {
-    setCodexServiceTierConfig({ mode: "passthrough", value: "priority" });
+    setServiceTierPolicy({ mode: "passthrough" });
   }
 });
 
-test("CodexExecutor override mode replaces explicit request service tier", () => {
-  setCodexServiceTierConfig({ mode: "override", value: "flex" });
+test("CodexExecutor omit mode removes explicit request service tier", () => {
+  setServiceTierPolicy({ mode: "omit" });
 
   try {
     const executor = new CodexExecutor();
@@ -189,14 +189,14 @@ test("CodexExecutor override mode replaces explicit request service tier", () =>
       { model: "gpt-5.1-codex", input: [], service_tier: "priority" },
       true
     );
-    assert.equal(transformed.service_tier, "flex");
+    assert.equal("service_tier" in transformed, false);
   } finally {
-    setCodexServiceTierConfig({ mode: "passthrough", value: "priority" });
+    setServiceTierPolicy({ mode: "passthrough" });
   }
 });
 
 test("CodexExecutor passthrough mode does not add missing service tier", () => {
-  setCodexServiceTierConfig({ mode: "passthrough", value: "flex" });
+  setServiceTierPolicy({ mode: "passthrough" });
 
   try {
     const executor = new CodexExecutor();
@@ -207,8 +207,69 @@ test("CodexExecutor passthrough mode does not add missing service tier", () => {
     );
     assert.equal("service_tier" in transformed, false);
   } finally {
-    setCodexServiceTierConfig({ mode: "passthrough", value: "priority" });
+    setServiceTierPolicy({ mode: "passthrough" });
   }
+});
+
+test("DefaultExecutor priority mode forces service tier for OpenAI API key requests", () => {
+  setServiceTierPolicy({ mode: "priority" });
+
+  try {
+    const executor = new DefaultExecutor("openai");
+    const transformed = executor.transformRequest(
+      "gpt-4o",
+      { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] },
+      false,
+      { apiKey: "sk-test" }
+    );
+    assert.equal(transformed.service_tier, "priority");
+  } finally {
+    setServiceTierPolicy({ mode: "passthrough" });
+  }
+});
+
+test("DefaultExecutor omit mode removes service tier for OpenAI API key requests", () => {
+  setServiceTierPolicy({ mode: "omit" });
+
+  try {
+    const executor = new DefaultExecutor("openai");
+    const transformed = executor.transformRequest(
+      "gpt-4o",
+      {
+        model: "gpt-4o",
+        messages: [{ role: "user", content: "hi" }],
+        service_tier: "auto",
+      },
+      false,
+      { apiKey: "sk-test" }
+    );
+    assert.equal("service_tier" in transformed, false);
+  } finally {
+    setServiceTierPolicy({ mode: "passthrough" });
+  }
+});
+
+test("DefaultExecutor passthrough keeps service tier for OpenAI API key requests", () => {
+  setServiceTierPolicy({ mode: "passthrough" });
+
+  const executor = new DefaultExecutor("openai");
+  const transformed = executor.transformRequest(
+    "gpt-4o",
+    {
+      model: "gpt-4o",
+      messages: [{ role: "user", content: "hi" }],
+      service_tier: "auto",
+    },
+    false,
+    { apiKey: "sk-test" }
+  );
+
+  assert.equal(transformed.service_tier, "auto");
+});
+
+test("service tier policy defaults to passthrough", () => {
+  setServiceTierPolicy(undefined);
+  assert.deepEqual(getServiceTierPolicy(), { mode: "passthrough" });
 });
 
 test("CodexExecutor always requests SSE accept header", () => {

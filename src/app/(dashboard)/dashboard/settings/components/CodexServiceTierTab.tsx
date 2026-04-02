@@ -1,41 +1,26 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Card, Input, Select } from "@/shared/components";
+import { Card } from "@/shared/components";
 
-type CodexServiceTierMode = "passthrough" | "override";
+type ServiceTierMode = "passthrough" | "omit" | "priority";
 
-interface CodexServiceTierConfig {
-  mode: CodexServiceTierMode;
-  value: string;
+interface ServiceTierPolicy {
+  mode: ServiceTierMode;
 }
 
-const DEFAULT_SERVICE_TIER_VALUE = "priority";
+const DEFAULT_POLICY: ServiceTierPolicy = {
+  mode: "passthrough",
+};
 
-const PRESET_TIER_OPTIONS = [
-  { value: "priority", label: "priority" },
-  { value: "flex", label: "flex" },
-  { value: "default", label: "default" },
-  { value: "auto", label: "auto" },
-];
-
-function normalizeMode(value: unknown): CodexServiceTierMode {
-  return value === "override" ? "override" : "passthrough";
-}
-
-function normalizeTierValue(value: unknown): string {
-  if (typeof value !== "string") return DEFAULT_SERVICE_TIER_VALUE;
-  const normalized = value.trim().toLowerCase();
-  return normalized || DEFAULT_SERVICE_TIER_VALUE;
+function normalizeMode(value: unknown): ServiceTierMode {
+  if (value === "omit" || value === "priority") return value;
+  return "passthrough";
 }
 
 export default function CodexServiceTierTab() {
-  const [currentConfig, setCurrentConfig] = useState<CodexServiceTierConfig>({
-    mode: "passthrough",
-    value: DEFAULT_SERVICE_TIER_VALUE,
-  });
-  const [mode, setMode] = useState<CodexServiceTierMode>("passthrough");
-  const [tierValue, setTierValue] = useState(DEFAULT_SERVICE_TIER_VALUE);
+  const [currentPolicy, setCurrentPolicy] = useState<ServiceTierPolicy>(DEFAULT_POLICY);
+  const [mode, setMode] = useState<ServiceTierMode>(DEFAULT_POLICY.mode);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState<"" | "saved" | "error">("");
@@ -44,50 +29,34 @@ export default function CodexServiceTierTab() {
     fetch("/api/settings/codex-service-tier")
       .then((res) => res.json())
       .then((data) => {
-        const nextMode = normalizeMode(data?.mode);
-        const nextValue = normalizeTierValue(data?.value);
-        const nextConfig = { mode: nextMode, value: nextValue };
-        setCurrentConfig(nextConfig);
-        setMode(nextMode);
-        setTierValue(nextValue);
+        const nextPolicy = { mode: normalizeMode(data?.mode) };
+        setCurrentPolicy(nextPolicy);
+        setMode(nextPolicy.mode);
         setLoading(false);
       })
       .catch(() => setLoading(false));
   }, []);
 
-  const normalizedDraftValue = tierValue.trim().toLowerCase();
-  const selectedPreset = PRESET_TIER_OPTIONS.some((item) => item.value === normalizedDraftValue)
-    ? normalizedDraftValue
-    : "custom";
-  const isOverrideValueMissing = mode === "override" && !normalizedDraftValue;
-  const isDirty = mode !== currentConfig.mode || normalizedDraftValue !== currentConfig.value;
+  const isDirty = mode !== currentPolicy.mode;
 
   const save = async () => {
-    if (isOverrideValueMissing || !isDirty) return;
+    if (!isDirty) return;
 
     setSaving(true);
     setStatus("");
 
     try {
-      const payload: { mode: CodexServiceTierMode; value?: string } = { mode };
-      if (normalizedDraftValue) {
-        payload.value = normalizedDraftValue;
-      }
-
       const res = await fetch("/api/settings/codex-service-tier", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ mode }),
       });
 
       if (res.ok) {
         const data = await res.json();
-        const nextMode = normalizeMode(data?.mode);
-        const nextValue = normalizeTierValue(data?.value);
-        const nextConfig = { mode: nextMode, value: nextValue };
-        setCurrentConfig(nextConfig);
-        setMode(nextMode);
-        setTierValue(nextValue);
+        const nextPolicy = { mode: normalizeMode(data?.mode) };
+        setCurrentPolicy(nextPolicy);
+        setMode(nextPolicy.mode);
         setStatus("saved");
         setTimeout(() => setStatus(""), 2000);
       } else {
@@ -105,13 +74,14 @@ export default function CodexServiceTierTab() {
       <div className="flex items-center gap-3 mb-5">
         <div className="p-2 rounded-lg bg-sky-500/10 text-sky-500">
           <span className="material-symbols-outlined text-[20px]" aria-hidden="true">
-            bolt
+            tune
           </span>
         </div>
         <div className="flex-1">
-          <h3 className="text-lg font-semibold">Codex Service Tier</h3>
+          <h3 className="text-lg font-semibold">Service Tier Policy</h3>
           <p className="text-sm text-text-muted">
-            Choose passthrough or override `service_tier` for all Codex requests.
+            Applies to Codex OAuth and OpenAI API-key requests. Choose passthrough, remove
+            `service_tier`, or force `priority`.
           </p>
         </div>
         {status === "saved" && (
@@ -128,7 +98,7 @@ export default function CodexServiceTierTab() {
         )}
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-4">
+      <div className="grid grid-cols-1 gap-2 mb-4">
         <button
           type="button"
           onClick={() => setMode("passthrough")}
@@ -151,76 +121,79 @@ export default function CodexServiceTierTab() {
               Passthrough
             </p>
             <p className="text-xs text-text-muted mt-0.5 leading-relaxed">
-              Keep request raw: do not modify `service_tier` at all.
+              Send the request raw. The proxy does not modify `service_tier`.
             </p>
           </div>
         </button>
 
         <button
           type="button"
-          onClick={() => setMode("override")}
+          onClick={() => setMode("omit")}
           disabled={loading || saving}
           className={`flex items-start gap-3 p-3 rounded-lg border text-left transition-all ${
-            mode === "override"
+            mode === "omit"
               ? "border-sky-500/50 bg-sky-500/5 ring-1 ring-sky-500/20"
               : "border-border/50 hover:border-border hover:bg-surface/30"
           }`}
         >
           <span
             className={`material-symbols-outlined text-[20px] mt-0.5 ${
-              mode === "override" ? "text-sky-500" : "text-text-muted"
+              mode === "omit" ? "text-sky-500" : "text-text-muted"
             }`}
           >
-            add_circle
+            remove_circle
           </span>
           <div className="min-w-0">
-            <p className={`text-sm font-medium ${mode === "override" ? "text-sky-400" : ""}`}>
-              Override
+            <p className={`text-sm font-medium ${mode === "omit" ? "text-sky-400" : ""}`}>
+              Remove service_tier
             </p>
             <p className="text-xs text-text-muted mt-0.5 leading-relaxed">
-              Force this value and override any `service_tier` in the incoming request.
+              Strip `service_tier` before sending the request upstream.
+            </p>
+          </div>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setMode("priority")}
+          disabled={loading || saving}
+          className={`flex items-start gap-3 p-3 rounded-lg border text-left transition-all ${
+            mode === "priority"
+              ? "border-sky-500/50 bg-sky-500/5 ring-1 ring-sky-500/20"
+              : "border-border/50 hover:border-border hover:bg-surface/30"
+          }`}
+        >
+          <span
+            className={`material-symbols-outlined text-[20px] mt-0.5 ${
+              mode === "priority" ? "text-sky-500" : "text-text-muted"
+            }`}
+          >
+            bolt
+          </span>
+          <div className="min-w-0">
+            <p className={`text-sm font-medium ${mode === "priority" ? "text-sky-400" : ""}`}>
+              Force priority
+            </p>
+            <p className="text-xs text-text-muted mt-0.5 leading-relaxed">
+              Override any incoming `service_tier` and always send `priority`.
             </p>
           </div>
         </button>
       </div>
 
-      <div className="p-4 rounded-lg bg-surface/30 border border-border/30 space-y-3">
-        <p className="text-sm font-medium">service_tier value</p>
-        <p className="text-xs text-text-muted">
-          Choose a preset or type any custom value. The value is normalized to lowercase.
+      <div className="p-4 rounded-lg bg-surface/30 border border-border/30">
+        <p className="text-xs text-text-muted leading-relaxed">
+          Passthrough can still fail if the upstream rejects the client-provided tier. Remove
+          `service_tier` is the safest non-priority option for Codex.
         </p>
-
-        <Select
-          label="Preset values"
-          value={selectedPreset}
-          disabled={loading || saving}
-          onChange={(event) => {
-            const nextValue = event.target.value;
-            if (nextValue === "custom") return;
-            setTierValue(nextValue);
-          }}
-          options={[...PRESET_TIER_OPTIONS, { value: "custom", label: "custom (manual input)" }]}
-        />
-
-        <Input
-          label="Manual value"
-          value={tierValue}
-          onChange={(event) => setTierValue(event.target.value)}
-          disabled={loading || saving}
-          placeholder="priority"
-          error={isOverrideValueMissing ? "Value is required in Override mode." : undefined}
-        />
       </div>
 
       <div className="mt-4 flex items-center justify-between gap-3">
-        <p className="text-xs text-text-muted">
-          Current: {currentConfig.mode}
-          {currentConfig.mode === "override" ? ` (${currentConfig.value})` : ""}
-        </p>
+        <p className="text-xs text-text-muted">Current: {currentPolicy.mode}</p>
         <button
           type="button"
           onClick={save}
-          disabled={loading || saving || isOverrideValueMissing || !isDirty}
+          disabled={loading || saving || !isDirty}
           className="px-3 py-2 rounded-md text-sm font-medium bg-sky-500 text-white hover:bg-sky-400 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
           {saving ? "Saving..." : "Save"}

@@ -1,20 +1,20 @@
 import { NextResponse, type Request } from "next/server";
 import { getSettings, updateSettings } from "@/lib/localDb";
 import {
-  normalizeCodexServiceTierConfig,
-  setCodexServiceTierConfig,
-} from "@omniroute/open-sse/executors/codex.ts";
-import { updateCodexServiceTierSchema } from "@/shared/validation/schemas";
+  normalizeServiceTierPolicy,
+  setServiceTierPolicy,
+} from "@omniroute/open-sse/executors/serviceTierPolicy.ts";
+import { updateServiceTierPolicySchema } from "@/shared/validation/schemas";
 import { isValidationFailure, validateBody } from "@/shared/validation/helpers";
 
 export async function GET() {
   try {
     const settings = await getSettings();
     const persisted =
-      typeof settings.codexServiceTier === "string"
-        ? JSON.parse(settings.codexServiceTier)
-        : settings.codexServiceTier;
-    const config = normalizeCodexServiceTierConfig(persisted);
+      typeof settings.serviceTierPolicy === "string"
+        ? JSON.parse(settings.serviceTierPolicy)
+        : settings.serviceTierPolicy;
+    const config = normalizeServiceTierPolicy(persisted);
 
     return NextResponse.json(config);
   } catch (error) {
@@ -40,14 +40,14 @@ export async function PUT(request: Request) {
   }
 
   try {
-    const validation = validateBody(updateCodexServiceTierSchema, rawBody);
+    const validation = validateBody(updateServiceTierPolicySchema, rawBody);
     if (isValidationFailure(validation)) {
       return NextResponse.json({ error: validation.error }, { status: 400 });
     }
 
-    const config = normalizeCodexServiceTierConfig(validation.data);
-    await updateSettings({ codexServiceTier: config });
-    const runtimeConfig = setCodexServiceTierConfig(config);
+    const config = normalizeServiceTierPolicy(validation.data);
+    await updateSettings({ serviceTierPolicy: config });
+    const runtimeConfig = setServiceTierPolicy(config);
 
     return NextResponse.json(runtimeConfig);
   } catch (error) {

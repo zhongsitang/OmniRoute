@@ -86,9 +86,9 @@ export async function registerNodejs(): Promise<void> {
   console.log("[STARTUP] Quota cache background refresh started");
 
   try {
-    const [{ setCustomAliases }, { setCodexServiceTierConfig }] = await Promise.all([
+    const [{ setCustomAliases }, { setServiceTierPolicy }] = await Promise.all([
       import("@omniroute/open-sse/services/modelDeprecation.ts"),
-      import("@omniroute/open-sse/executors/codex.ts"),
+      import("@omniroute/open-sse/executors/serviceTierPolicy.ts"),
     ]);
     const settings = await getSettings();
 
@@ -106,17 +106,12 @@ export async function registerNodejs(): Promise<void> {
     }
 
     const persisted =
-      typeof settings.codexServiceTier === "string"
-        ? JSON.parse(settings.codexServiceTier)
-        : settings.codexServiceTier;
+      typeof settings.serviceTierPolicy === "string"
+        ? JSON.parse(settings.serviceTierPolicy)
+        : settings.serviceTierPolicy;
 
-    const codexServiceTierConfig = setCodexServiceTierConfig(persisted);
-    console.log(
-      `[STARTUP] Restored Codex service tier: ${codexServiceTierConfig.mode}` +
-        (codexServiceTierConfig.mode === "override"
-          ? ` (${codexServiceTierConfig.value})`
-          : " (passthrough)")
-    );
+    const serviceTierPolicy = setServiceTierPolicy(persisted);
+    console.log(`[STARTUP] Restored service tier policy: ${serviceTierPolicy.mode}`);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn("[STARTUP] Could not restore runtime settings:", msg);

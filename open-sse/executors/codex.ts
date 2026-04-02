@@ -2,27 +2,11 @@ import { BaseExecutor } from "./base.ts";
 import { CODEX_DEFAULT_INSTRUCTIONS } from "../config/codexInstructions.ts";
 import { PROVIDERS } from "../config/constants.ts";
 import { refreshCodexToken } from "../services/tokenRefresh.ts";
-import { CODEX_FAST_SERVICE_TIER } from "@/lib/usage/serviceTier";
+import { applyConfiguredServiceTierPolicy } from "./serviceTierPolicy.ts";
 
 // Ordered list of effort levels from lowest to highest
 const EFFORT_ORDER = ["none", "low", "medium", "high", "xhigh"] as const;
 type EffortLevel = (typeof EFFORT_ORDER)[number];
-
-type CodexServiceTierMode = "passthrough" | "override";
-
-export interface CodexServiceTierConfig {
-  mode: CodexServiceTierMode;
-  value: string;
-}
-
-const DEFAULT_CODEX_SERVICE_TIER_CONFIG: CodexServiceTierConfig = {
-  mode: "passthrough",
-  value: CODEX_FAST_SERVICE_TIER,
-};
-
-let defaultCodexServiceTierConfig: CodexServiceTierConfig = {
-  ...DEFAULT_CODEX_SERVICE_TIER_CONFIG,
-};
 
 function normalizeNativeResponsesInputItem(item: unknown): unknown {
   if (typeof item === "string") {
@@ -75,52 +59,6 @@ function getResponsesSubpath(endpointPath: unknown): string | null {
 
 function isCompactResponsesEndpoint(endpointPath: unknown): boolean {
   return getResponsesSubpath(endpointPath)?.toLowerCase() === "/compact";
-}
-
-function normalizeConfiguredServiceTierValue(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const normalized = value.trim();
-  return normalized || undefined;
-}
-
-export function normalizeCodexServiceTierConfig(value: unknown): CodexServiceTierConfig {
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    const record = value as Record<string, unknown>;
-
-    const rawMode = typeof record.mode === "string" ? record.mode.trim().toLowerCase() : "";
-    const normalizedMode: CodexServiceTierMode =
-      rawMode === "override" ? "override" : "passthrough";
-    const normalizedValue =
-      normalizeConfiguredServiceTierValue(record.value) ?? DEFAULT_CODEX_SERVICE_TIER_CONFIG.value;
-
-    return {
-      mode: normalizedMode,
-      value: normalizedValue,
-    };
-  }
-
-  return { ...DEFAULT_CODEX_SERVICE_TIER_CONFIG };
-}
-
-export function setCodexServiceTierConfig(value: unknown): CodexServiceTierConfig {
-  const normalized = normalizeCodexServiceTierConfig(value);
-  defaultCodexServiceTierConfig = normalized;
-  return normalized;
-}
-
-export function getCodexServiceTierConfig(): CodexServiceTierConfig {
-  return { ...defaultCodexServiceTierConfig };
-}
-
-/**
- * Backward-compatible wrapper for older callers.
- * Prefer `setCodexServiceTierConfig({ mode, value })` for new code.
- */
-export function setDefaultFastServiceTierEnabled(enabled: boolean): void {
-  setCodexServiceTierConfig({
-    mode: enabled ? "override" : "passthrough",
-    value: CODEX_FAST_SERVICE_TIER,
-  });
 }
 
 /**
@@ -238,9 +176,7 @@ export class CodexExecutor extends BaseExecutor {
     }
     delete body._nativeCodexPassthrough;
 
-    if (defaultCodexServiceTierConfig.mode === "override") {
-      body.service_tier = defaultCodexServiceTierConfig.value;
-    }
+    applyConfiguredServiceTierPolicy(this.provider, body, credentials);
 
     // Codex /responses passthrough still needs a system prompt because upstream
     // rejects requests that omit instructions entirely.

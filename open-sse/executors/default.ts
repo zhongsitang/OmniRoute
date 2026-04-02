@@ -1,6 +1,7 @@
 import { BaseExecutor } from "./base.ts";
 import { PROVIDERS, OAUTH_ENDPOINTS } from "../config/constants.ts";
 import { getAccessToken } from "../services/tokenRefresh.ts";
+import { applyConfiguredServiceTierPolicy } from "./serviceTierPolicy.ts";
 
 export class DefaultExecutor extends BaseExecutor {
   constructor(provider) {
@@ -88,6 +89,9 @@ export class DefaultExecutor extends BaseExecutor {
    * "org/model-name") — we must NOT strip path segments. (Fix #493)
    */
   transformRequest(model, body, stream, credentials) {
+    void model;
+    void stream;
+    applyConfiguredServiceTierPolicy(this.provider, body, credentials);
     return body;
   }
 

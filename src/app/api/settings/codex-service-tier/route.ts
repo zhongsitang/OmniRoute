@@ -16,10 +16,7 @@ export async function GET() {
         : settings.codexServiceTier;
     const config = normalizeCodexServiceTierConfig(persisted);
 
-    return NextResponse.json({
-      ...config,
-      enabled: config.mode === "inject",
-    });
+    return NextResponse.json(config);
   } catch (error) {
     console.error("[API ERROR] /api/settings/codex-service-tier GET:", error);
     return NextResponse.json({ error: "Failed to get config" }, { status: 500 });
@@ -52,10 +49,7 @@ export async function PUT(request: Request) {
     await updateSettings({ codexServiceTier: config });
     const runtimeConfig = setCodexServiceTierConfig(config);
 
-    return NextResponse.json({
-      ...runtimeConfig,
-      enabled: runtimeConfig.mode === "inject",
-    });
+    return NextResponse.json(runtimeConfig);
   } catch (error) {
     console.error("[API ERROR] /api/settings/codex-service-tier PUT:", error);
     return NextResponse.json({ error: "Failed to update config" }, { status: 500 });

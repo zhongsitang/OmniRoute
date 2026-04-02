@@ -569,30 +569,21 @@ export const updateThinkingBudgetSchema = z
 
 const codexServiceTierConfigSchema = z
   .object({
-    mode: z.enum(["passthrough", "inject"]),
+    mode: z.enum(["passthrough", "override"]),
     value: z.string().trim().min(1).max(64).optional(),
   })
   .strict()
   .superRefine((value, ctx) => {
-    if (value.mode === "inject" && !value.value) {
+    if (value.mode === "override" && !value.value) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "value is required when mode=inject",
+        message: "value is required when mode=override",
         path: ["value"],
       });
     }
   });
 
-const legacyCodexServiceTierSchema = z
-  .object({
-    enabled: z.boolean(),
-  })
-  .strict();
-
-export const updateCodexServiceTierSchema = z.union([
-  codexServiceTierConfigSchema,
-  legacyCodexServiceTierSchema,
-]);
+export const updateCodexServiceTierSchema = codexServiceTierConfigSchema;
 
 const ipFilterModeSchema = z.enum(["blacklist", "whitelist"]);
 const tempBanSchema = z.object({

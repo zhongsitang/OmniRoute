@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { Card, Input, Select } from "@/shared/components";
 
-type CodexServiceTierMode = "passthrough" | "inject";
+type CodexServiceTierMode = "passthrough" | "override";
 
 interface CodexServiceTierConfig {
   mode: CodexServiceTierMode;
@@ -20,7 +20,7 @@ const PRESET_TIER_OPTIONS = [
 ];
 
 function normalizeMode(value: unknown): CodexServiceTierMode {
-  return value === "inject" ? "inject" : "passthrough";
+  return value === "override" ? "override" : "passthrough";
 }
 
 function normalizeTierValue(value: unknown): string {
@@ -44,7 +44,7 @@ export default function CodexServiceTierTab() {
     fetch("/api/settings/codex-service-tier")
       .then((res) => res.json())
       .then((data) => {
-        const nextMode = normalizeMode(data?.mode ?? (data?.enabled ? "inject" : "passthrough"));
+        const nextMode = normalizeMode(data?.mode);
         const nextValue = normalizeTierValue(data?.value);
         const nextConfig = { mode: nextMode, value: nextValue };
         setCurrentConfig(nextConfig);
@@ -59,11 +59,11 @@ export default function CodexServiceTierTab() {
   const selectedPreset = PRESET_TIER_OPTIONS.some((item) => item.value === normalizedDraftValue)
     ? normalizedDraftValue
     : "custom";
-  const isInjectValueMissing = mode === "inject" && !normalizedDraftValue;
+  const isOverrideValueMissing = mode === "override" && !normalizedDraftValue;
   const isDirty = mode !== currentConfig.mode || normalizedDraftValue !== currentConfig.value;
 
   const save = async () => {
-    if (isInjectValueMissing || !isDirty) return;
+    if (isOverrideValueMissing || !isDirty) return;
 
     setSaving(true);
     setStatus("");
@@ -111,7 +111,7 @@ export default function CodexServiceTierTab() {
         <div className="flex-1">
           <h3 className="text-lg font-semibold">Codex Service Tier</h3>
           <p className="text-sm text-text-muted">
-            Choose passthrough or inject a default `service_tier` when it is missing.
+            Choose passthrough or override `service_tier` for all Codex requests.
           </p>
         </div>
         {status === "saved" && (
@@ -151,34 +151,34 @@ export default function CodexServiceTierTab() {
               Passthrough
             </p>
             <p className="text-xs text-text-muted mt-0.5 leading-relaxed">
-              Preserve client-provided `service_tier`. If missing, do not inject.
+              Keep request raw: do not modify `service_tier` at all.
             </p>
           </div>
         </button>
 
         <button
           type="button"
-          onClick={() => setMode("inject")}
+          onClick={() => setMode("override")}
           disabled={loading || saving}
           className={`flex items-start gap-3 p-3 rounded-lg border text-left transition-all ${
-            mode === "inject"
+            mode === "override"
               ? "border-sky-500/50 bg-sky-500/5 ring-1 ring-sky-500/20"
               : "border-border/50 hover:border-border hover:bg-surface/30"
           }`}
         >
           <span
             className={`material-symbols-outlined text-[20px] mt-0.5 ${
-              mode === "inject" ? "text-sky-500" : "text-text-muted"
+              mode === "override" ? "text-sky-500" : "text-text-muted"
             }`}
           >
             add_circle
           </span>
           <div className="min-w-0">
-            <p className={`text-sm font-medium ${mode === "inject" ? "text-sky-400" : ""}`}>
-              Inject Default
+            <p className={`text-sm font-medium ${mode === "override" ? "text-sky-400" : ""}`}>
+              Override
             </p>
             <p className="text-xs text-text-muted mt-0.5 leading-relaxed">
-              Inject this value only when the request does not include `service_tier`.
+              Force this value and override any `service_tier` in the incoming request.
             </p>
           </div>
         </button>
@@ -208,19 +208,19 @@ export default function CodexServiceTierTab() {
           onChange={(event) => setTierValue(event.target.value)}
           disabled={loading || saving}
           placeholder="priority"
-          error={isInjectValueMissing ? "Value is required in Inject Default mode." : undefined}
+          error={isOverrideValueMissing ? "Value is required in Override mode." : undefined}
         />
       </div>
 
       <div className="mt-4 flex items-center justify-between gap-3">
         <p className="text-xs text-text-muted">
           Current: {currentConfig.mode}
-          {currentConfig.mode === "inject" ? ` (${currentConfig.value})` : ""}
+          {currentConfig.mode === "override" ? ` (${currentConfig.value})` : ""}
         </p>
         <button
           type="button"
           onClick={save}
-          disabled={loading || saving || isInjectValueMissing || !isDirty}
+          disabled={loading || saving || isOverrideValueMissing || !isDirty}
           className="px-3 py-2 rounded-md text-sm font-medium bg-sky-500 text-white hover:bg-sky-400 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
           {saving ? "Saving..." : "Save"}

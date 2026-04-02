@@ -81,14 +81,14 @@ test("CodexExecutor forces stream=true for upstream compatibility", () => {
   assert.equal(transformed.stream, true);
 });
 
-test("CodexExecutor maps fast service tier to priority", () => {
+test("CodexExecutor passthrough keeps raw service tier value", () => {
   const executor = new CodexExecutor();
   const transformed = executor.transformRequest(
     "gpt-5.1-codex",
     { model: "gpt-5.1-codex", input: [], service_tier: "fast" },
     true
   );
-  assert.equal(transformed.service_tier, "priority");
+  assert.equal(transformed.service_tier, "fast");
 });
 
 test("shouldUseNativeCodexPassthrough only enables responses-native Codex requests", () => {
@@ -163,8 +163,8 @@ test("CodexExecutor can force fast service tier from settings", () => {
   }
 });
 
-test("CodexExecutor can inject custom service tier from settings", () => {
-  setCodexServiceTierConfig({ mode: "inject", value: "flex" });
+test("CodexExecutor can override service tier from settings", () => {
+  setCodexServiceTierConfig({ mode: "override", value: "flex" });
 
   try {
     const executor = new CodexExecutor();
@@ -179,7 +179,23 @@ test("CodexExecutor can inject custom service tier from settings", () => {
   }
 });
 
-test("CodexExecutor passthrough mode does not inject service tier", () => {
+test("CodexExecutor override mode replaces explicit request service tier", () => {
+  setCodexServiceTierConfig({ mode: "override", value: "flex" });
+
+  try {
+    const executor = new CodexExecutor();
+    const transformed = executor.transformRequest(
+      "gpt-5.1-codex",
+      { model: "gpt-5.1-codex", input: [], service_tier: "priority" },
+      true
+    );
+    assert.equal(transformed.service_tier, "flex");
+  } finally {
+    setCodexServiceTierConfig({ mode: "passthrough", value: "priority" });
+  }
+});
+
+test("CodexExecutor passthrough mode does not add missing service tier", () => {
   setCodexServiceTierConfig({ mode: "passthrough", value: "flex" });
 
   try {
@@ -232,7 +248,7 @@ test("CodexExecutor normalizes native responses payloads for Codex passthrough",
   );
 
   assert.equal(transformed.stream, true);
-  assert.equal(transformed.service_tier, "priority");
+  assert.equal(transformed.service_tier, "fast");
   assert.equal(transformed.instructions, "custom system prompt");
   assert.equal(transformed.store, false);
   assert.deepEqual(transformed.metadata, { source: "codex-client" });

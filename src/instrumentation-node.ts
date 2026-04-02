@@ -113,7 +113,7 @@ export async function registerNodejs(): Promise<void> {
     const codexServiceTierConfig = setCodexServiceTierConfig(persisted);
     console.log(
       `[STARTUP] Restored Codex service tier: ${codexServiceTierConfig.mode}` +
-        (codexServiceTierConfig.mode === "inject"
+        (codexServiceTierConfig.mode === "override"
           ? ` (${codexServiceTierConfig.value})`
           : " (passthrough)")
     );
